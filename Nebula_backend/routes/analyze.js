@@ -1,20 +1,36 @@
 import express from "express";
-import { analyzeRepository, buildGraph } from "../services/analyzeService.js";
+import { buildGraph } from "../services/analyzeService.js";
+import { buildTree, cloneRepo, listFiles } from "../services/ingest.js";
+import { storeAnalysis } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
-export function createAnalyzeRouter({ fetchImpl = fetch } = {}) {
+const githubRepositoryUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
+
+export function createAnalyzeRouter({
+  fetchImpl = fetch,
+  cloneRepoImpl = cloneRepo,
+  listFilesImpl = listFiles,
+  buildTreeImpl = buildTree,
+  storeAnalysisImpl = storeAnalysis,
+} = {}) {
   const router = express.Router();
 
   router.post("/analyze", async (request, response) => {
-    if (typeof request.body?.url !== "string") {
-      return response.status(400).json({ error: "url must be a GitHub repository URL." });
+    const { url } = request.body ?? {};
+    if (typeof url !== "string" || !githubRepositoryUrl.test(url)) {
+      return response.status(400).json({ error: "Invalid GitHub URL" });
     }
 
     try {
-      const result = await analyzeRepository(request.body.url, { fetchImpl });
-      return response.status(200).json(result);
+      const { id, dir } = await cloneRepoImpl(url);
+      const files = await listFilesImpl(dir);
+      const tree = buildTreeImpl(files);
+      storeAnalysisImpl(id, dir);
+
+      return response.status(200).json({ id, status: "done", fileCount: files.length, files, tree });
     } catch (error) {
-      return sendGraphError(response, error);
+      console.error("Repository ingestion failed:", error.message);
+      return response.status(500).json({ error: "Could not clone repo (private or not found?)" });
     }
   });
 

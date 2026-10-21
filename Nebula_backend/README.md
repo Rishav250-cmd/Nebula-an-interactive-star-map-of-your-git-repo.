@@ -24,7 +24,7 @@ The server listens on port `5000` by default. Set `PORT` in `.env` to use a diff
 
 `GET /api/mock-graph` serves the sample graph from the repository's `docs/mock-graph.json` file.
 
-`POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }` and returns an analysis `{ "id", "status" }` after building the graph. Results are held in memory for the lifetime of the server process.
+`POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }`, shallow-clones the repository, and returns its ID, filtered file list, and nested directory tree. The clone directory is recorded in memory for later analysis endpoints and is held in the system temporary directory.
 
 ## Build a repository graph
 

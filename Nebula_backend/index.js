@@ -7,7 +7,7 @@ import { createAnalyzeRouter } from "./routes/analyze.js";
 
 const mockGraphPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../docs/mock-graph.json");
 
-export function createApp({ fetchImpl = fetch } = {}) {
+export function createApp(options = {}) {
   const app = express();
 
   app.use(cors());
@@ -25,7 +25,7 @@ export function createApp({ fetchImpl = fetch } = {}) {
     response.sendFile(mockGraphPath);
   });
 
-  app.use("/api", createAnalyzeRouter({ fetchImpl }));
+  app.use("/api", createAnalyzeRouter(options));
 
   return app;
 }
