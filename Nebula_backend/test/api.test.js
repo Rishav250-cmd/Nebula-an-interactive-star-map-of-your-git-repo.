@@ -50,6 +50,34 @@ test("POST /api/graph validates the repository URL", async () => {
   });
 });
 
+test("POST /api/analyze returns an analysis identifier and status", async () => {
+  const app = createApp({
+    fetchImpl: async (url) => {
+      if (url === "https://api.github.com/repos/octocat/demo") {
+        return jsonResponse({ full_name: "octocat/demo", default_branch: "main" });
+      }
+      if (url.endsWith("/branches/main")) {
+        return jsonResponse({ commit: { sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } } });
+      }
+      if (url.includes("/git/trees/")) return jsonResponse({ truncated: false, tree: [] });
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://github.com/octocat/demo" }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(typeof body.id, "string");
+    assert.equal(body.status, "ready");
+  });
+});
+
 async function withServer(app, callback) {
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");

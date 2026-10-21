@@ -10,24 +10,28 @@ npm install
 npm run dev
 ```
 
-The server listens on port `3000` by default. Set `PORT` to use a different port.
+The server listens on port `5000` by default. Set `PORT` in `.env` to use a different port.
 
-## Health endpoint
+## Mock and status endpoints
 
-`GET /health` returns HTTP `200` when the API is running:
+`GET /api/ping` returns HTTP `200` when the API is running:
 
 ```json
 {
-  "status": "ok"
+  "ok": true
 }
 ```
+
+`GET /api/mock-graph` serves the sample graph from the repository's `docs/mock-graph.json` file.
+
+`POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }` and returns an analysis `{ "id", "status" }` after building the graph. Results are held in memory for the lifetime of the server process.
 
 ## Build a repository graph
 
 `POST /api/graph` accepts a public GitHub repository URL:
 
 ```sh
-curl -X POST http://localhost:3000/api/graph \
+curl -X POST http://localhost:5000/api/graph \
   -H 'content-type: application/json' \
   -d '{"repoUrl":"https://github.com/octocat/hello-world"}'
 ```
