@@ -63,7 +63,7 @@ test("buildRepositoryGraph creates nodes and internal import edges from GitHub d
       });
     }
     if (url === "https://raw.githubusercontent.com/octocat/demo/commit-sha/src/index.ts") {
-      return textResponse('import { add } from "./util";\nimport React from "react";');
+      return textResponse('import { add } from "./util";\nimport "./util.ts";\nimport React from "react";');
     }
     if (url === "https://raw.githubusercontent.com/octocat/demo/commit-sha/src/util.ts") {
       return textResponse("export const add = (left, right) => left + right;");

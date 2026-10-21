@@ -134,15 +134,19 @@ export async function buildRepositoryGraph(repoUrl, { fetchImpl = fetch } = {}) 
       language: path.posix.extname(filePath).slice(1),
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
-  const edges = [];
+  const edgesById = new Map();
 
   for (const { path: sourcePath, source } of sourceFiles) {
     for (const specifier of extractImportSpecifiers(source)) {
       const target = resolveRelativeImport(sourcePath, specifier, knownPaths);
-      if (target) edges.push({ id: `${sourcePath}->${target}`, source: sourcePath, target });
+      if (target) {
+        const id = `${sourcePath}->${target}`;
+        edgesById.set(id, { id, source: sourcePath, target });
+      }
     }
   }
 
+  const edges = [...edgesById.values()];
   edges.sort((left, right) => left.id.localeCompare(right.id));
 
   return {
