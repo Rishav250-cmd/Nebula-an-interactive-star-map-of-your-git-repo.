@@ -1,0 +1,58 @@
+.node-tooltip {
+  position: fixed;
+  z-index: 5;
+  width: max-content;
+  min-width: 208px;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgb(13 16 32 / 96%);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 42%), 0 0 18px rgb(108 77 246 / 12%);
+  pointer-events: none;
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+}
+
+.node-tooltip__path {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.node-tooltip__metrics {
+  display: grid;
+  margin: 10px 0 0;
+  gap: 6px;
+}
+
+.node-tooltip__metrics > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.node-tooltip__metrics dt {
+  color: var(--text-muted);
+}
+
+.node-tooltip__metrics dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.node-tooltip__badge {
+  display: inline-flex;
+  margin-top: 11px;
+  padding: 4px 7px;
+  border: 1px solid rgb(220 38 38 / 38%);
+  border-radius: 999px;
+  color: #fca5a5;
+  background: rgb(220 38 38 / 12%);
+  font-size: 10px;
+  font-weight: 600;
+}

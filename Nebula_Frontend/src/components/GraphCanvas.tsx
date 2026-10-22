@@ -5,6 +5,7 @@ import ForceGraph2D, {
   type LinkObject,
   type NodeObject,
 } from 'react-force-graph-2d';
+import { NodeTooltip } from './NodeTooltip';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
 
@@ -236,6 +237,7 @@ export function GraphCanvas() {
           enablePanInteraction
         />
       )}
+      <NodeTooltip containerRef={containerRef} />
     </main>
   );
 }
