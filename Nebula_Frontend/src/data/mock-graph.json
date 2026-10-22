@@ -1,0 +1,68 @@
+{
+  "repo": "demo/app",
+  "sha": "abc123",
+  "nodes": [
+    {
+      "id": "src/index.js",
+      "folder": "src",
+      "loc": 68,
+      "tokens": 512,
+      "complexity": 5,
+      "churn": 4,
+      "healthScore": 91,
+      "isGodFile": false,
+      "inCycle": false,
+      "fanIn": 0,
+      "fanOut": 1
+    },
+    {
+      "id": "src/api.js",
+      "folder": "src",
+      "loc": 126,
+      "tokens": 948,
+      "complexity": 13,
+      "churn": 18,
+      "healthScore": 67,
+      "isGodFile": false,
+      "inCycle": true,
+      "fanIn": 2,
+      "fanOut": 1
+    },
+    {
+      "id": "src/utils.js",
+      "folder": "src",
+      "loc": 54,
+      "tokens": 386,
+      "complexity": 6,
+      "churn": 7,
+      "healthScore": 82,
+      "isGodFile": false,
+      "inCycle": true,
+      "fanIn": 1,
+      "fanOut": 1
+    }
+  ],
+  "edges": [
+    {
+      "source": "src/index.js",
+      "target": "src/api.js",
+      "type": "import"
+    },
+    {
+      "source": "src/api.js",
+      "target": "src/utils.js",
+      "type": "import"
+    },
+    {
+      "source": "src/utils.js",
+      "target": "src/api.js",
+      "type": "import"
+    }
+  ],
+  "cycles": [
+    [
+      "src/api.js",
+      "src/utils.js"
+    ]
+  ]
+}

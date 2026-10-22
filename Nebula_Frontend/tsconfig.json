@@ -5,6 +5,7 @@
     "lib": ["ES2023", "DOM"],
     "jsx": "react-jsx",
     "types": ["vite/client"],
+    "resolveJsonModule": true,
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
