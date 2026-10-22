@@ -1,6 +1,6 @@
 import express from "express";
 import { buildGraph } from "../services/analyzeService.js";
-import { cloneRepo } from "../services/ingest.js";
+import { cloneRepo, listFiles } from "../services/ingest.js";
 import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
@@ -8,6 +8,7 @@ const githubRepositoryUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/
 
 export function createAnalyzeRouter({
   cloneRepoImpl = cloneRepo,
+  listFilesImpl = listFiles,
   buildGraphImpl = buildGraph,
   getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
@@ -29,8 +30,9 @@ export function createAnalyzeRouter({
     }
 
     try {
-      const { id, dir, sha } = clonedRepository;
-      const graph = await buildGraphImpl(url, dir, { sha });
+      const { id, dir } = clonedRepository;
+      const files = await listFilesImpl(dir);
+      const graph = await buildGraphImpl({ id, dir, files, repoUrl: url });
       storeAnalysisImpl(id, dir, graph);
       return response.status(200).json({ id, status: "ready" });
     } catch (error) {

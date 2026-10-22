@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { simpleGit } from "simple-git";
 import test from "node:test";
 import { getAnalysis } from "../services/store.js";
 import { createApp } from "../src/app.js";
@@ -14,10 +15,17 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
     await mkdir(path.join(root, "src"), { recursive: true });
     await writeFile(path.join(root, "src", "index.js"), 'import { helper } from "./helper";\nexport const output = helper();');
     await writeFile(path.join(root, "src", "helper.js"), 'export const helper = () => "ok";');
+    const git = simpleGit(root);
+    await git.init();
+    await git.addConfig("user.name", "Nebula Test");
+    await git.addConfig("user.email", "nebula-test@example.invalid");
+    await git.add(".");
+    await git.commit("create API fixture");
+    const expectedSha = (await git.revparse(["HEAD"])).trim();
     const app = createApp({
       cloneRepoImpl: async (url) => {
         assert.equal(url, "https://github.com/octocat/demo");
-        return { id: "analysis-fixture", dir: root, sha: "commit-sha" };
+        return { id: "analysis-fixture", dir: root, sha: expectedSha };
       },
     });
 
@@ -36,13 +44,14 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
       const graph = await graphResponse.json();
 
       assert.equal(graphResponse.status, 200);
-      assert.equal(graph.repo, "octocat/demo");
-      assert.equal(graph.sha, "commit-sha");
+      assert.equal(graph.repo, "https://github.com/octocat/demo");
+      assert.equal(graph.sha, expectedSha);
       assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/helper.js", "src/index.js"]);
       assert.deepEqual(graph.edges, [
         { source: "src/index.js", target: "src/helper.js", type: "import" },
       ]);
       assert.deepEqual(graph.cycles, []);
+      assert.deepEqual(graph.warnings, []);
       assert.deepEqual(Object.keys(graph.nodes[0]).sort(), [
         "churn", "complexity", "fanIn", "fanOut", "folder", "healthScore", "id", "inCycle", "isGodFile", "loc", "tokens",
       ]);
