@@ -1,7 +1,7 @@
 const analyses = new Map();
 
-export function storeAnalysis(id, dir) {
-  const analysis = { id, dir };
+export function storeAnalysis(id, dir, graph) {
+  const analysis = { id, dir, graph };
   analyses.set(id, analysis);
   return analysis;
 }

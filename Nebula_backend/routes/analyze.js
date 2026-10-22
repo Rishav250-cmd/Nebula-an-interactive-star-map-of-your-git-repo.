@@ -1,16 +1,15 @@
 import express from "express";
 import { buildGraph } from "../services/analyzeService.js";
-import { buildTree, cloneRepo, listFiles } from "../services/ingest.js";
-import { storeAnalysis } from "../services/store.js";
+import { cloneRepo } from "../services/ingest.js";
+import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
 const githubRepositoryUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
 
 export function createAnalyzeRouter({
-  fetchImpl = fetch,
   cloneRepoImpl = cloneRepo,
-  listFilesImpl = listFiles,
-  buildTreeImpl = buildTree,
+  buildGraphImpl = buildGraph,
+  getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
 } = {}) {
   const router = express.Router();
@@ -21,30 +20,33 @@ export function createAnalyzeRouter({
       return response.status(400).json({ error: "Invalid GitHub URL" });
     }
 
+    let clonedRepository;
     try {
-      const { id, dir } = await cloneRepoImpl(url);
-      const files = await listFilesImpl(dir);
-      const tree = buildTreeImpl(files);
-      storeAnalysisImpl(id, dir);
-
-      return response.status(200).json({ id, status: "done", fileCount: files.length, files, tree });
+      clonedRepository = await cloneRepoImpl(url);
     } catch (error) {
-      console.error("Repository ingestion failed:", error.message);
+      console.error("Repository clone failed:", error.message);
       return response.status(500).json({ error: "Could not clone repo (private or not found?)" });
+    }
+
+    try {
+      const { id, dir, sha } = clonedRepository;
+      const graph = await buildGraphImpl(url, dir, { sha });
+      storeAnalysisImpl(id, dir, graph);
+      return response.status(200).json({ id, status: "ready" });
+    } catch (error) {
+      console.error("Repository graph build failed:", error.message);
+      if (error instanceof GraphError) return sendGraphError(response, error);
+      return response.status(500).json({ error: "Could not build repository graph." });
     }
   });
 
-  // Preserve the original graph endpoint while the analysis-ID API is built out.
-  router.post("/graph", async (request, response) => {
-    if (typeof request.body?.repoUrl !== "string") {
-      return response.status(400).json({ error: "repoUrl must be a GitHub repository URL." });
+  router.get("/graph/:id", (request, response) => {
+    const analysis = getAnalysisImpl(request.params.id);
+    if (!analysis?.graph) {
+      return response.status(404).json({ error: "Analysis not found." });
     }
 
-    try {
-      return response.status(200).json(await buildGraph(request.body.repoUrl, { fetchImpl }));
-    } catch (error) {
-      return sendGraphError(response, error);
-    }
+    return response.status(200).json(analysis.graph);
   });
 
   return router;

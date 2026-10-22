@@ -24,8 +24,9 @@ export async function cloneRepo(url) {
   await rm(dir, { recursive: true, force: true });
   await mkdir(path.dirname(dir), { recursive: true });
   await simpleGit().clone(url, dir, ["--depth", "200"]);
+  const sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
 
-  return { id, dir };
+  return { id, dir, sha };
 }
 
 export async function listFiles(root) {

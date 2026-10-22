@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildRepositoryGraph,
   extractImportSpecifiers,
   GraphError,
   parseGitHubRepoUrl,
+  parseSourceFile,
   resolveRelativeImport,
 } from "../src/graph.js";
 
@@ -33,75 +37,75 @@ test("extractImportSpecifiers finds static, dynamic, and CommonJS imports", () =
   assert.deepEqual(extractImportSpecifiers(source), ["./value.js", "../shared/helper", "./lazy", "./common"]);
 });
 
-test("resolveRelativeImport resolves extensionless imports and ignores packages", () => {
-  const files = new Set(["src/value.ts", "shared/helper.ts"]);
+test("parseSourceFile keeps imports behind an extensible parser result", () => {
+  assert.deepEqual(parseSourceFile('import value from "./value.js";'), {
+    imports: ["./value.js"],
+  });
+});
+
+test("resolveRelativeImport resolves extensionless and directory imports and ignores packages", () => {
+  const files = new Set(["src/value.ts", "shared/helper.ts", "src/widgets/index.ts"]);
 
   assert.equal(resolveRelativeImport("src/index.ts", "./value", files), "src/value.ts");
   assert.equal(resolveRelativeImport("src/index.ts", "../shared/helper", files), "shared/helper.ts");
+  assert.equal(resolveRelativeImport("src/index.ts", "./widgets", files), "src/widgets/index.ts");
   assert.equal(resolveRelativeImport("src/index.ts", "react", files), null);
+  assert.equal(resolveRelativeImport("src/index.ts", "../../outside", files), null);
 });
 
-test("buildRepositoryGraph creates nodes and internal import edges from GitHub data", async () => {
-  const requestedUrls = [];
-  const fetchImpl = async (url) => {
-    requestedUrls.push(url);
+test("buildRepositoryGraph reads source files from a local clone and returns contract nodes and edges", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nebula-graph-test-"));
 
-    if (url === "https://api.github.com/repos/octocat/demo") {
-      return jsonResponse({ full_name: "octocat/demo", html_url: "https://github.com/octocat/demo", default_branch: "main" });
-    }
-    if (url === "https://api.github.com/repos/octocat/demo/branches/main") {
-      return jsonResponse({ commit: { sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } } });
-    }
-    if (url === "https://api.github.com/repos/octocat/demo/git/trees/tree-sha?recursive=1") {
-      return jsonResponse({
-        truncated: false,
-        tree: [
-          { type: "blob", path: "src/index.ts", size: 64 },
-          { type: "blob", path: "src/util.ts", size: 32 },
-          { type: "blob", path: "src/style.css", size: 20 },
-        ],
-      });
-    }
-    if (url === "https://raw.githubusercontent.com/octocat/demo/commit-sha/src/index.ts") {
-      return textResponse('import { add } from "./util";\nimport "./util.ts";\nimport React from "react";');
-    }
-    if (url === "https://raw.githubusercontent.com/octocat/demo/commit-sha/src/util.ts") {
-      return textResponse("export const add = (left, right) => left + right;");
-    }
+  try {
+    await mkdir(path.join(root, "src", "two"), { recursive: true });
+    await mkdir(path.join(root, "node_modules", "ignored"), { recursive: true });
+    await writeFile(path.join(root, "index.ts"), 'import { one } from "./src/one";\nexport const result = one();');
+    await writeFile(
+      path.join(root, "src", "one.ts"),
+      [
+        'import { two } from "./two";',
+        'import "./two/index.ts";',
+        'const lazy = import("./two");',
+        'const common = require("./two");',
+        'import external from "some-package";',
+        "export const one = () => two();",
+      ].join("\n"),
+    );
+    await writeFile(path.join(root, "src", "two", "index.ts"), 'import "../../index";\nexport const two = () => 2;');
+    await writeFile(path.join(root, "README.md"), "not a source file");
+    await writeFile(path.join(root, "node_modules", "ignored", "index.js"), "ignored source");
 
-    throw new Error(`Unexpected URL: ${url}`);
-  };
+    const graph = await buildRepositoryGraph("https://github.com/octocat/demo", root, { sha: "commit-sha" });
 
-  const graph = await buildRepositoryGraph("https://github.com/octocat/demo", { fetchImpl });
+    assert.equal(graph.repo, "octocat/demo");
+    assert.equal(graph.sha, "commit-sha");
+    assert.deepEqual(graph.nodes.map(({ id }) => id), ["index.ts", "src/one.ts", "src/two/index.ts"]);
+    assert.deepEqual(graph.edges, [
+      { source: "index.ts", target: "src/one.ts", type: "import" },
+      { source: "src/one.ts", target: "src/two/index.ts", type: "import" },
+      { source: "src/two/index.ts", target: "index.ts", type: "import" },
+    ]);
+    assert.deepEqual(graph.cycles, []);
 
-  assert.equal(graph.repository.name, "octocat/demo");
-  assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/index.ts", "src/util.ts"]);
-  assert.deepEqual(graph.edges, [{ id: "src/index.ts->src/util.ts", source: "src/index.ts", target: "src/util.ts" }]);
-  assert.ok(requestedUrls.some((url) => url.includes("?recursive=1")));
+    const [rootNode, oneNode, twoNode] = graph.nodes;
+    assert.deepEqual(
+      { folder: rootNode.folder, loc: rootNode.loc, complexity: rootNode.complexity, churn: rootNode.churn, healthScore: rootNode.healthScore, isGodFile: rootNode.isGodFile, inCycle: rootNode.inCycle, fanIn: rootNode.fanIn, fanOut: rootNode.fanOut },
+      { folder: ".", loc: 2, complexity: 0, churn: 0, healthScore: null, isGodFile: false, inCycle: false, fanIn: 1, fanOut: 1 },
+    );
+    assert.equal(rootNode.tokens > 0, true);
+    assert.equal(oneNode.folder, "src");
+    assert.equal(oneNode.fanIn, 1);
+    assert.equal(oneNode.fanOut, 1);
+    assert.equal(twoNode.fanIn, 1);
+    assert.equal(twoNode.fanOut, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test("buildRepositoryGraph rejects a truncated Git tree", async () => {
-  const fetchImpl = async (url) => {
-    if (url === "https://api.github.com/repos/octocat/demo") return jsonResponse({ default_branch: "main" });
-    if (url.endsWith("/branches/main")) {
-      return jsonResponse({ commit: { sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } } });
-    }
-    return jsonResponse({ truncated: true, tree: [] });
-  };
-
+test("buildRepositoryGraph requires a commit SHA for the returned graph", async () => {
   await assert.rejects(
-    buildRepositoryGraph("https://github.com/octocat/demo", { fetchImpl }),
-    (error) => error instanceof GraphError && error.statusCode === 413,
+    buildRepositoryGraph("https://github.com/octocat/demo", "/tmp/repo", {}),
+    (error) => error instanceof GraphError && error.statusCode === 500,
   );
 });
-
-function jsonResponse(data, status = 200, headers = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
-}
-
-function textResponse(text, status = 200) {
-  return new Response(text, { status, headers: { "content-type": "text/plain" } });
-}

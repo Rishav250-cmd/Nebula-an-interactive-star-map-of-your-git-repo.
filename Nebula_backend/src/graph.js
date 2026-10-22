@@ -1,11 +1,12 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { listFiles } from "../services/ingest.js";
+import { countLines } from "../utils/countLines.js";
 
 const SOURCE_EXTENSIONS = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
 const SOURCE_EXTENSION_SET = new Set(SOURCE_EXTENSIONS);
-const MAX_SOURCE_FILES = 200;
-const MAX_SOURCE_FILE_BYTES = 512 * 1024;
-const MAX_CONCURRENT_DOWNLOADS = 8;
-const GITHUB_API = "https://api.github.com";
+const MAX_CONCURRENT_READS = 8;
+const TOKEN_PATTERN = /[A-Za-z_$][\w$]*|\d+(?:\.\d+)?|===|!==|=>|==|!=|<=|>=|\+\+|--|&&|\|\||\?\?|\?\.|\*\*|[^\s]/g;
 
 export class GraphError extends Error {
   constructor(statusCode, message) {
@@ -66,6 +67,11 @@ export function extractImportSpecifiers(source) {
   return [...specifiers];
 }
 
+// Keep syntax extraction behind one result shape so later analysis can add symbols and calls.
+export function parseSourceFile(source) {
+  return { imports: extractImportSpecifiers(source) };
+}
+
 export function resolveRelativeImport(sourcePath, specifier, knownPaths) {
   if (!specifier.startsWith(".")) return null;
 
@@ -86,135 +92,76 @@ export function resolveRelativeImport(sourcePath, specifier, knownPaths) {
   return candidates.find((candidate) => knownPaths.has(candidate)) ?? null;
 }
 
-export async function buildRepositoryGraph(repoUrl, { fetchImpl = fetch } = {}) {
+export async function buildRepositoryGraph(
+  repoUrl,
+  repositoryDir,
+  { sha, listFilesImpl = listFiles, readFileImpl = readFile } = {},
+) {
   const { owner, repository } = parseGitHubRepoUrl(repoUrl);
-  const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
-  const repoInfo = await fetchGitHubJson(`${GITHUB_API}${repoPath}`, fetchImpl);
-
-  if (!repoInfo.default_branch) {
-    throw new GraphError(502, "GitHub did not return a default branch for this repository.");
+  if (typeof sha !== "string" || !sha.trim()) {
+    throw new GraphError(500, "A cloned repository commit SHA is required to build its graph.");
   }
 
-  const branch = await fetchGitHubJson(
-    `${GITHUB_API}${repoPath}/branches/${encodeURIComponent(repoInfo.default_branch)}`,
-    fetchImpl,
-  );
-  const commitSha = branch.commit?.sha;
-  const treeSha = branch.commit?.commit?.tree?.sha;
+  const sourcePaths = (await listFilesImpl(repositoryDir))
+    .filter((filePath) => SOURCE_EXTENSION_SET.has(path.posix.extname(filePath).toLowerCase()))
+    .sort((left, right) => left.localeCompare(right));
+  const knownPaths = new Set(sourcePaths);
+  const parsedFiles = await mapWithConcurrency(sourcePaths, MAX_CONCURRENT_READS, async (filePath) => {
+    const diskPath = path.join(repositoryDir, ...filePath.split("/"));
+    const source = await readFileImpl(diskPath, "utf8");
 
-  if (!commitSha || !treeSha) {
-    throw new GraphError(502, "GitHub did not return the repository's latest commit tree.");
-  }
-
-  const tree = await fetchGitHubJson(
-    `${GITHUB_API}${repoPath}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`,
-    fetchImpl,
-  );
-
-  if (tree.truncated) {
-    throw new GraphError(413, "This repository is too large to analyze in one request.");
-  }
-
-  const sourceEntries = (tree.tree ?? []).filter(isSupportedSourceEntry);
-  if (sourceEntries.length > MAX_SOURCE_FILES) {
-    throw new GraphError(413, `This repository has more than ${MAX_SOURCE_FILES} JavaScript or TypeScript files to analyze.`);
-  }
-
-  const sourceFiles = await mapWithConcurrency(
-    sourceEntries,
-    MAX_CONCURRENT_DOWNLOADS,
-    async (entry) => ({ path: entry.path, source: await fetchRawSource(owner, repository, commitSha, entry.path, fetchImpl) }),
-  );
-  const knownPaths = new Set(sourceFiles.map((file) => file.path));
-  const nodes = sourceFiles
-    .map(({ path: filePath }) => ({
-      id: filePath,
-      label: path.posix.basename(filePath),
+    return {
       path: filePath,
-      language: path.posix.extname(filePath).slice(1),
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id));
-  const edgesById = new Map();
+      loc: countLines(source),
+      tokens: countTokens(source),
+      imports: parseSourceFile(source).imports,
+    };
+  });
 
-  for (const { path: sourcePath, source } of sourceFiles) {
-    for (const specifier of extractImportSpecifiers(source)) {
-      const target = resolveRelativeImport(sourcePath, specifier, knownPaths);
-      if (target) {
-        const id = `${sourcePath}->${target}`;
-        edgesById.set(id, { id, source: sourcePath, target });
-      }
+  const nodes = parsedFiles.map(({ path: filePath, loc, tokens }) => ({
+    id: filePath,
+    folder: filePath.includes("/") ? filePath.split("/")[0] : ".",
+    loc,
+    tokens,
+    complexity: 0,
+    churn: 0,
+    healthScore: null,
+    isGodFile: false,
+    inCycle: false,
+    fanIn: 0,
+    fanOut: 0,
+  }));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const edgeKeys = new Set();
+  const edges = [];
+
+  for (const { path: sourcePath, imports } of parsedFiles) {
+    for (const specifier of imports) {
+      const targetPath = resolveRelativeImport(sourcePath, specifier, knownPaths);
+      if (!targetPath) continue;
+
+      const edgeKey = `${sourcePath}\0${targetPath}`;
+      if (edgeKeys.has(edgeKey)) continue;
+      edgeKeys.add(edgeKey);
+      edges.push({ source: sourcePath, target: targetPath, type: "import" });
+      nodesById.get(sourcePath).fanOut += 1;
+      nodesById.get(targetPath).fanIn += 1;
     }
   }
 
-  const edges = [...edgesById.values()];
-  edges.sort((left, right) => left.id.localeCompare(right.id));
+  edges.sort((left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target));
 
   return {
-    repository: {
-      name: repoInfo.full_name ?? `${owner}/${repository}`,
-      url: repoInfo.html_url ?? `https://github.com/${owner}/${repository}`,
-      defaultBranch: repoInfo.default_branch,
-      commit: commitSha,
-    },
+    repo: `${owner}/${repository}`,
+    sha: sha.trim(),
     nodes,
     edges,
+    cycles: [],
   };
 }
 
-function isSupportedSourceEntry(entry) {
-  if (entry.type !== "blob" || !entry.path || (entry.size ?? 0) > MAX_SOURCE_FILE_BYTES) return false;
-  if (!SOURCE_EXTENSION_SET.has(path.posix.extname(entry.path).toLowerCase())) return false;
-
-  return !entry.path.split("/").some((segment) => [".git", "node_modules", "dist", "build", "coverage"].includes(segment));
-}
-
-async function fetchGitHubJson(url, fetchImpl) {
-  const response = await fetchRemote(url, fetchImpl, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "Nebula-backend",
-    },
-  });
-
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new GraphError(502, "GitHub returned an invalid response.");
-  }
-
-  if (!response.ok) {
-    const limited = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
-    if (limited) throw new GraphError(429, "GitHub's API rate limit was reached. Try again later.");
-    if (response.status === 404) throw new GraphError(404, "Repository not found or not publicly accessible.");
-    throw new GraphError(502, "GitHub could not provide repository metadata.");
-  }
-
-  return data;
-}
-
-async function fetchRawSource(owner, repository, commitSha, filePath, fetchImpl) {
-  const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-  const url = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/${encodeURIComponent(commitSha)}/${encodedPath}`;
-  const response = await fetchRemote(url, fetchImpl, {});
-
-  if (!response.ok) throw new GraphError(502, "GitHub could not provide one of the repository source files.");
-
-  return response.text();
-}
-
-async function fetchRemote(url, fetchImpl, options) {
-  try {
-    const response = await fetchImpl(url, { ...options, signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) return response;
-    return response;
-  } catch (error) {
-    if (error.name === "TimeoutError" || error.name === "AbortError") {
-      throw new GraphError(504, "A request to GitHub timed out.");
-    }
-    throw new GraphError(502, "Could not connect to GitHub.");
-  }
+function countTokens(source) {
+  return source.match(TOKEN_PATTERN)?.length ?? 0;
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {

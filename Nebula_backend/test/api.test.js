@@ -1,83 +1,58 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { getAnalysis } from "../services/store.js";
 import { createApp } from "../src/app.js";
 
-test("POST /api/graph returns a repository graph", async () => {
-  const app = createApp({
-    fetchImpl: async (url) => {
-      if (url === "https://api.github.com/repos/octocat/demo") {
-        return jsonResponse({ full_name: "octocat/demo", default_branch: "main" });
-      }
-      if (url.endsWith("/branches/main")) {
-        return jsonResponse({ commit: { sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } } });
-      }
-      if (url.includes("/git/trees/")) {
-        return jsonResponse({ truncated: false, tree: [{ type: "blob", path: "index.js", size: 30 }] });
-      }
-      if (url.endsWith("/commit-sha/index.js")) return textResponse("export default 1;");
-      throw new Error(`Unexpected URL: ${url}`);
-    },
-  });
+test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nebula-api-test-"));
 
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/api/graph`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repoUrl: "https://github.com/octocat/demo" }),
-    });
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.repository.name, "octocat/demo");
-    assert.deepEqual(body.nodes.map(({ id }) => id), ["index.js"]);
-    assert.deepEqual(body.edges, []);
-  });
-});
-
-test("POST /api/graph validates the repository URL", async () => {
-  const app = createApp({ fetchImpl: async () => { throw new Error("fetch should not be called"); } });
-
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/api/graph`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repoUrl: "https://example.com/owner/repo" }),
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "index.js"), 'import { helper } from "./helper";\nexport const output = helper();');
+    await writeFile(path.join(root, "src", "helper.js"), 'export const helper = () => "ok";');
+    const app = createApp({
+      cloneRepoImpl: async (url) => {
+        assert.equal(url, "https://github.com/octocat/demo");
+        return { id: "analysis-fixture", dir: root, sha: "commit-sha" };
+      },
     });
 
-    assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /github\.com/);
-  });
-});
+    await withServer(app, async (baseUrl) => {
+      const analyzeResponse = await fetch(`${baseUrl}/api/analyze`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://github.com/octocat/demo" }),
+      });
 
-test("POST /api/analyze clones a valid repo and returns its file tree", async () => {
-  const app = createApp({
-    cloneRepoImpl: async (url) => {
-      assert.equal(url, "https://github.com/octocat/demo");
-      return { id: "test-id", dir: "/tmp/test-repo" };
-    },
-    listFilesImpl: async () => ["src/index.js", "README.md"],
-  });
+      assert.equal(analyzeResponse.status, 200);
+      assert.deepEqual(await analyzeResponse.json(), { id: "analysis-fixture", status: "ready" });
+      assert.equal(getAnalysis("analysis-fixture").dir, root);
 
-  await withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/api/analyze`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: "https://github.com/octocat/demo" }),
+      const graphResponse = await fetch(`${baseUrl}/api/graph/analysis-fixture`);
+      const graph = await graphResponse.json();
+
+      assert.equal(graphResponse.status, 200);
+      assert.equal(graph.repo, "octocat/demo");
+      assert.equal(graph.sha, "commit-sha");
+      assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/helper.js", "src/index.js"]);
+      assert.deepEqual(graph.edges, [
+        { source: "src/index.js", target: "src/helper.js", type: "import" },
+      ]);
+      assert.deepEqual(graph.cycles, []);
+      assert.deepEqual(Object.keys(graph.nodes[0]).sort(), [
+        "churn", "complexity", "fanIn", "fanOut", "folder", "healthScore", "id", "inCycle", "isGodFile", "loc", "tokens",
+      ]);
+      assert.equal(graph.nodes[0].healthScore, null);
+      assert.equal(graph.nodes[0].fanIn, 1);
+      assert.equal(graph.nodes[1].fanOut, 1);
     });
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(body, {
-      id: "test-id",
-      status: "done",
-      fileCount: 2,
-      files: ["src/index.js", "README.md"],
-      tree: { src: { "index.js": null }, "README.md": null },
-    });
-    assert.deepEqual(getAnalysis("test-id"), { id: "test-id", dir: "/tmp/test-repo" });
-  });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("POST /api/analyze rejects invalid GitHub URLs", async () => {
@@ -99,7 +74,7 @@ test("POST /api/analyze rejects invalid GitHub URLs", async () => {
   });
 });
 
-test("POST /api/analyze returns the clone error when cloning fails", async () => {
+test("POST /api/analyze returns an error when cloning fails", async () => {
   const app = createApp({
     cloneRepoImpl: async () => {
       throw new Error("clone failed");
@@ -120,6 +95,17 @@ test("POST /api/analyze returns the clone error when cloning fails", async () =>
   });
 });
 
+test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => {
+  const app = createApp();
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/graph/missing-analysis`);
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "Analysis not found." });
+  });
+});
+
 async function withServer(app, callback) {
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -132,15 +118,4 @@ async function withServer(app, callback) {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
-}
-
-function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-function textResponse(text, status = 200) {
-  return new Response(text, { status, headers: { "content-type": "text/plain" } });
 }
