@@ -7,8 +7,8 @@ import {
   buildRepositoryGraph,
   GraphError,
   parseGitHubRepoUrl,
-  resolveRelativeImport,
 } from "../src/graph.js";
+import { resolveImport } from "../services/resolver.js";
 
 test("parseGitHubRepoUrl accepts a repository URL and optional .git suffix", () => {
   assert.deepEqual(parseGitHubRepoUrl("https://github.com/octocat/hello-world.git"), {
@@ -24,14 +24,15 @@ test("parseGitHubRepoUrl rejects hosts other than github.com", () => {
   });
 });
 
-test("resolveRelativeImport resolves extensionless and directory imports and ignores packages", () => {
+test("resolveImport resolves relative extensionless and directory imports and ignores packages", () => {
   const files = new Set(["src/value.ts", "shared/helper.ts", "src/widgets/index.ts"]);
 
-  assert.equal(resolveRelativeImport("src/index.ts", "./value", files), "src/value.ts");
-  assert.equal(resolveRelativeImport("src/index.ts", "../shared/helper", files), "shared/helper.ts");
-  assert.equal(resolveRelativeImport("src/index.ts", "./widgets", files), "src/widgets/index.ts");
-  assert.equal(resolveRelativeImport("src/index.ts", "react", files), null);
-  assert.equal(resolveRelativeImport("src/index.ts", "../../outside", files), null);
+  assert.equal(resolveImport("./value", "src/index.ts", files), "src/value.ts");
+  assert.equal(resolveImport("../shared/helper", "src/index.ts", files), "shared/helper.ts");
+  assert.equal(resolveImport("./widgets", "src/index.ts", files), "src/widgets/index.ts");
+  assert.equal(resolveImport("react", "src/index.ts", files), null);
+  assert.equal(resolveImport("node:fs", "src/index.ts", files), null);
+  assert.equal(resolveImport("../../outside", "src/index.ts", files), null);
 });
 
 test("buildRepositoryGraph reads source files from a local clone and returns contract nodes and edges", async () => {

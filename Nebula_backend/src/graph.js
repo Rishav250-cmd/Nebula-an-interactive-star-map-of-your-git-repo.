@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { listFiles } from "../services/ingest.js";
 import { parseImports } from "../services/parser.js";
+import { loadAliases, resolveImport } from "../services/resolver.js";
 import { countLines } from "../utils/countLines.js";
 
 const SOURCE_EXTENSIONS = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
@@ -51,26 +52,6 @@ export function parseGitHubRepoUrl(repoUrl) {
   return { owner, repository };
 }
 
-export function resolveRelativeImport(sourcePath, specifier, knownPaths) {
-  if (!specifier.startsWith(".")) return null;
-
-  const basePath = path.posix.normalize(path.posix.join(path.posix.dirname(sourcePath), specifier));
-  if (basePath === ".." || basePath.startsWith("../") || path.posix.isAbsolute(basePath)) return null;
-
-  const candidates = [basePath];
-  const extension = path.posix.extname(basePath);
-
-  if (extension) {
-    const stem = basePath.slice(0, -extension.length);
-    candidates.push(...SOURCE_EXTENSIONS.map((candidateExtension) => `${stem}${candidateExtension}`));
-  } else {
-    candidates.push(...SOURCE_EXTENSIONS.map((candidateExtension) => `${basePath}${candidateExtension}`));
-    candidates.push(...SOURCE_EXTENSIONS.map((candidateExtension) => `${basePath}/index${candidateExtension}`));
-  }
-
-  return candidates.find((candidate) => knownPaths.has(candidate)) ?? null;
-}
-
 export async function buildRepositoryGraph(
   repoUrl,
   repositoryDir,
@@ -85,6 +66,7 @@ export async function buildRepositoryGraph(
     .filter((filePath) => SOURCE_EXTENSION_SET.has(path.posix.extname(filePath).toLowerCase()))
     .sort((left, right) => left.localeCompare(right));
   const knownPaths = new Set(sourcePaths);
+  const aliases = await loadAliases(repositoryDir);
   const parsedFiles = await mapWithConcurrency(sourcePaths, MAX_CONCURRENT_READS, async (filePath) => {
     const diskPath = path.join(repositoryDir, ...filePath.split("/"));
     const source = await readFileImpl(diskPath, "utf8");
@@ -116,7 +98,7 @@ export async function buildRepositoryGraph(
 
   for (const { path: sourcePath, imports } of parsedFiles) {
     for (const specifier of imports) {
-      const targetPath = resolveRelativeImport(sourcePath, specifier, knownPaths);
+      const targetPath = resolveImport(specifier, sourcePath, knownPaths, { aliases });
       if (!targetPath) continue;
 
       const edgeKey = `${sourcePath}\0${targetPath}`;
