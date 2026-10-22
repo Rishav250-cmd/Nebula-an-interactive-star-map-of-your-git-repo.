@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import './App.css';
 import { fetchMockGraph } from './api/client';
+import { generateMockGraph } from './data/generateMock';
 import { GraphCanvas } from './components/GraphCanvas';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
@@ -14,6 +15,14 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     setStatus('loading');
+
+    if (new URLSearchParams(window.location.search).get('big') === '1') {
+      setGraph(generateMockGraph());
+      setStatus('ready');
+      return () => {
+        isMounted = false;
+      };
+    }
 
     fetchMockGraph()
       .then((graph) => {
