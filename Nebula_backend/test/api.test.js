@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { simpleGit } from "simple-git";
+import AdmZip from "adm-zip";
 import test from "node:test";
 import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { createApp } from "../app.js";
@@ -188,6 +189,95 @@ test("GET /api/graph/:id builds and caches a graph when it is not cached", async
   });
 });
 
+test("POST /api/upload extracts a ZIP and its lazy graph can be fetched", async () => {
+  const zipBuffer = makeZip({
+    "src/index.js": 'export const value = "ok";',
+    "README.md": "A small fixture.",
+    "node_modules/pkg/index.js": "ignored",
+  });
+  const app = createApp();
+  let extractedDir;
+
+  try {
+    await withServer(app, async (baseUrl) => {
+      const response = await uploadZip(baseUrl, "demo.zip", zipBuffer);
+      const result = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.match(result.id, /^[0-9a-f]{10}$/);
+      assert.equal(result.status, "done");
+      assert.equal(result.fileCount, 2);
+      assert.deepEqual(result.files, ["README.md", "src/index.js"]);
+      assert.deepEqual(result.tree, { "README.md": null, src: { "index.js": null } });
+
+      const analysis = getAnalysis(result.id);
+      extractedDir = analysis.dir;
+      assert.equal(analysis.url, "demo.zip");
+      assert.equal(analysis.graph, null);
+
+      const graphResponse = await fetch(`${baseUrl}/api/graph/${result.id}`);
+      const graph = await graphResponse.json();
+      assert.equal(graphResponse.status, 200);
+      assert.equal(graph.repo, "demo.zip");
+      assert.equal(graph.sha, result.id);
+      assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/index.js"]);
+    });
+  } finally {
+    if (extractedDir) await rm(extractedDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/upload rejects a ZIP-slip entry", async () => {
+  const zip = new AdmZip();
+  zip.addFile("safe.txt", Buffer.from("outside"));
+  zip.getEntry("safe.txt").entryName = "../../nebula-zip-slip.txt";
+  const app = createApp();
+
+  await withServer(app, async (baseUrl) => {
+    const response = await uploadZip(baseUrl, "unsafe.zip", zip.toBuffer());
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /escapes its target folder/);
+  });
+});
+
+test("POST /api/upload rejects a missing file and a non-ZIP filename", async () => {
+  const app = createApp();
+
+  await withServer(app, async (baseUrl) => {
+    const missing = await fetch(`${baseUrl}/api/upload`, { method: "POST", body: new FormData() });
+    assert.equal(missing.status, 400);
+    assert.match((await missing.json()).error, /ZIP file is required/);
+
+    const nonZip = await uploadZip(baseUrl, "notes.txt", Buffer.from("not a zip"));
+    assert.equal(nonZip.status, 400);
+    assert.deepEqual(await nonZip.json(), { error: "Only .zip files are accepted." });
+  });
+});
+
+test("POST /api/upload strips a single top-level folder and ignores repository junk", async () => {
+  const zipBuffer = makeZip({
+    "repo-main/src/app.ts": "export const app = true;",
+    "repo-main/.git/config": "ignored",
+    "repo-main/node_modules/pkg/index.js": "ignored",
+    "repo-main/dist/bundle.js": "ignored",
+  });
+  let extractedDir;
+
+  try {
+    await withServer(createApp(), async (baseUrl) => {
+      const response = await uploadZip(baseUrl, "repo-main.zip", zipBuffer);
+      const result = await response.json();
+      assert.equal(response.status, 200);
+      assert.deepEqual(result.files, ["src/app.ts"]);
+      assert.deepEqual(result.tree, { src: { "app.ts": null } });
+      extractedDir = getAnalysis(result.id).dir;
+      assert.equal(getAnalysis(result.id).url, "repo-main.zip");
+    });
+  } finally {
+    if (extractedDir) await rm(extractedDir, { recursive: true, force: true });
+  }
+});
+
 async function withServer(app, callback) {
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -200,4 +290,18 @@ async function withServer(app, callback) {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+}
+
+function makeZip(files) {
+  const zip = new AdmZip();
+  for (const [entryPath, contents] of Object.entries(files)) {
+    zip.addFile(entryPath, Buffer.from(contents));
+  }
+  return zip.toBuffer();
+}
+
+function uploadZip(baseUrl, fileName, bytes) {
+  const form = new FormData();
+  form.append("file", new Blob([bytes], { type: "application/zip" }), fileName);
+  return fetch(`${baseUrl}/api/upload`, { method: "POST", body: form });
 }

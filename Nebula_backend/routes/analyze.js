@@ -1,10 +1,17 @@
 import express from "express";
+import multer from "multer";
+import { rm } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
-import { cloneRepo, listFiles } from "../services/ingest.js";
+import { extractZipArchive, ZipArchiveError } from "../services/archive.js";
+import { buildTree, cloneRepo, listFiles } from "../services/ingest.js";
 import { cacheAnalysisGraph, getAnalysis, storeAnalysis } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
 const githubRepositoryUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
+const uploadZip = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 0 },
+});
 
 export function createAnalyzeRouter({
   cloneRepoImpl = cloneRepo,
@@ -39,6 +46,39 @@ export function createAnalyzeRouter({
       return response.status(200).json({ ...repository.graph, id: repository.id });
     } catch (error) {
       return sendPipelineError(response, error);
+    }
+  });
+
+  router.post("/upload", runZipUpload, async (request, response) => {
+    if (!request.file) {
+      return response.status(400).json({ error: "A ZIP file is required in the 'file' field." });
+    }
+
+    const fileName = request.file.originalname.split(/[\\/]/).at(-1) || "";
+    if (!fileName.toLowerCase().endsWith(".zip")) {
+      return response.status(400).json({ error: "Only .zip files are accepted." });
+    }
+
+    let extracted;
+    try {
+      extracted = await extractZipArchive(request.file.buffer);
+      const files = await listFilesImpl(extracted.dir);
+      const tree = buildTree(files);
+      storeAnalysisImpl({ id: extracted.id, dir: extracted.dir, url: fileName, graph: null });
+      return response.status(200).json({
+        id: extracted.id,
+        status: "done",
+        fileCount: files.length,
+        files,
+        tree,
+      });
+    } catch (error) {
+      if (extracted?.dir) await rm(extracted.dir, { recursive: true, force: true });
+      if (error instanceof ZipArchiveError) {
+        return response.status(error.statusCode).json({ error: error.message });
+      }
+      console.error("Repository upload failed:", error?.message ?? String(error));
+      return response.status(500).json({ error: "Could not process uploaded repository." });
     }
   });
 
@@ -91,6 +131,16 @@ export function createAnalyzeRouter({
   }
 
   return router;
+}
+
+function runZipUpload(request, response, next) {
+  uploadZip.single("file")(request, response, (error) => {
+    if (!error) return next();
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return response.status(413).json({ error: "ZIP upload exceeds the 50 MB limit." });
+    }
+    return response.status(400).json({ error: "Upload exactly one file in the 'file' field." });
+  });
 }
 
 function isValidRepositoryUrl(url) {

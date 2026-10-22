@@ -11,7 +11,14 @@ const BATCH_SIZE = 50;
 const TOKEN_PATTERN = /[A-Za-z_$][\w$]*|\d+|[^\s\w]/g;
 
 export async function buildGraph({ id, dir, files, repoUrl }) {
-  const sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
+  let sha;
+  try {
+    sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
+  } catch (error) {
+    // Archives have no Git metadata, so use their upload ID as a stable snapshot marker.
+    if (typeof repoUrl !== "string" || !repoUrl.toLowerCase().endsWith(".zip")) throw error;
+    sha = id;
+  }
   const sortedCodeFiles = [...new Set(Array.isArray(files) ? files : [])]
     .filter(
       (file) => typeof file === "string" && CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()),
