@@ -11,6 +11,8 @@ This document describes the implemented Day 2 backend API. All endpoints are roo
 | `GET` | `/api/graph/:id` | Analysis `id` in the path | `GraphData`; `404 { "error": "Unknown repository id" }` if the id is unknown |
 | `POST` | `/api/upload` | Multipart form with one `.zip` file in the `file` field; maximum compressed size is 50 MB | `{ "id": string, "status": "done", "fileCount": number, "files": string[], "tree": FileTree }` |
 | `GET` | `/api/mock-graph` | No parameters | Example graph JSON from `docs/mock-graph.json` |
+| `GET` | `/api/file?id=:id&path=:path` | Analysis id and repository-relative path | `{ "content": string, "language": string, "loc": number }` |
+| `GET` | `/api/search?id=:id&q=:q` | Analysis id and search query (case-insensitive) | `SearchResult[]` (at most 10, best matches first; empty array for a blank query) |
 
 `POST /api/analyze` clones a public GitHub repository and stores its graph for retrieval. `POST /api/graph` is a convenience endpoint that runs the same clone and graph pipeline and returns the graph immediately, with the analysis id added. `GET /api/graph/:id` builds and caches the graph if it has not been built yet.
 
@@ -18,15 +20,17 @@ This document describes the implemented Day 2 backend API. All endpoints are roo
 
 The backend also serves `GET /api/ping` and `GET /health`, both returning a small health response.
 
+`GET /api/file` reads one text file from the stored repository for the code panel. It returns `400` for a missing `id`/`path` or an unsafe path (absolute, `..`, or a symlink leaving the repo), `404` for an unknown id, a missing file, a directory, or files Nebula never indexes (`.git`, `node_modules`, images, lock files), `413` for files over 1 MB, and `415` for binary files. `language` is a react-syntax-highlighter name (for example `javascript`, `tsx`, `python`) or `plaintext`, and `loc` is the number of lines.
+
+`GET /api/search` matches the query against every indexed file path. Exact file names rank first, then names that start with the query, then names that contain it, then folder-only matches. Each result is `{ "type": "file", "name": file name, "path": repo-relative path, "line": 1 }`. It returns `400` when `id` is missing or `q` is repeated or longer than 200 characters, and `404` for an unknown id. Function and class results (`type: "symbol"`) arrive on Day 3.
+
 ## Planned endpoints
 
 These routes describe future API work and are not implemented in the Day 2 backend yet.
 
 | Method | Path | Request | Planned response shape |
 | --- | --- | --- | --- |
-| `GET` | `/api/file?id=:id&path=:path` | Analysis id and repository-relative path | `{ "content": string, "language": string, "loc": number }` |
 | `GET` | `/api/callgraph?id=:id&path=:path` | Analysis id and repository-relative path | `{ "nodes": Node[], "edges": Edge[] }` |
-| `GET` | `/api/search?id=:id&q=:q` | Analysis id and search query | `SearchResult[]` |
 | `GET` | `/api/blast?id=:id&path=:path` | Analysis id and repository-relative path | `{ "affected": string[], "count": number, "depthMap": Record<string, number> }` |
 | `GET` | `/api/health/:id` | Analysis id | `{ "grade": string, "hotspots": Hotspot[], "godFiles": string[], "cycleCount": number }` |
 | `GET` | `/api/onboarding/:id` | Analysis id | `{ "path": string[], "issues": OnboardingIssue[] }` |
