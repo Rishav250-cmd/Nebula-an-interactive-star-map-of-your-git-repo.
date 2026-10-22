@@ -5,10 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildRepositoryGraph,
-  extractImportSpecifiers,
   GraphError,
   parseGitHubRepoUrl,
-  parseSourceFile,
   resolveRelativeImport,
 } from "../src/graph.js";
 
@@ -23,23 +21,6 @@ test("parseGitHubRepoUrl rejects hosts other than github.com", () => {
   assert.throws(() => parseGitHubRepoUrl("https://example.com/octocat/hello-world"), {
     name: "GraphError",
     statusCode: 400,
-  });
-});
-
-test("extractImportSpecifiers finds static, dynamic, and CommonJS imports", () => {
-  const source = [
-    'import value from "./value.js";',
-    'export { helper } from "../shared/helper";',
-    'const lazy = import("./lazy");',
-    'const common = require("./common");',
-  ].join("\n");
-
-  assert.deepEqual(extractImportSpecifiers(source), ["./value.js", "../shared/helper", "./lazy", "./common"]);
-});
-
-test("parseSourceFile keeps imports behind an extensible parser result", () => {
-  assert.deepEqual(parseSourceFile('import value from "./value.js";'), {
-    imports: ["./value.js"],
   });
 });
 

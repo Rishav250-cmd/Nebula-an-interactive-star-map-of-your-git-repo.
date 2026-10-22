@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { listFiles } from "../services/ingest.js";
+import { parseImports } from "../services/parser.js";
 import { countLines } from "../utils/countLines.js";
 
 const SOURCE_EXTENSIONS = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
@@ -50,28 +51,6 @@ export function parseGitHubRepoUrl(repoUrl) {
   return { owner, repository };
 }
 
-export function extractImportSpecifiers(source) {
-  const patterns = [
-    /\b(?:import|export)\s+(?:[^'";]*?\s+from\s*)?["']([^"']+)["']/g,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
-  ];
-  const specifiers = new Set();
-
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      specifiers.add(match[1]);
-    }
-  }
-
-  return [...specifiers];
-}
-
-// Keep syntax extraction behind one result shape so later analysis can add symbols and calls.
-export function parseSourceFile(source) {
-  return { imports: extractImportSpecifiers(source) };
-}
-
 export function resolveRelativeImport(sourcePath, specifier, knownPaths) {
   if (!specifier.startsWith(".")) return null;
 
@@ -114,7 +93,7 @@ export async function buildRepositoryGraph(
       path: filePath,
       loc: countLines(source),
       tokens: countTokens(source),
-      imports: parseSourceFile(source).imports,
+      imports: parseImports(source, filePath).imports.map(({ specifier }) => specifier),
     };
   });
 
