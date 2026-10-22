@@ -3,7 +3,35 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildTree, listFiles } from "../services/ingest.js";
+import { simpleGit } from "simple-git";
+import { buildTree, cloneRepo, listFiles } from "../services/ingest.js";
+
+test("cloneRepo returns its cloned directory and checked-out commit SHA", async () => {
+  const source = await mkdtemp(path.join(os.tmpdir(), "nebula-clone-source-"));
+  let cloneDir;
+
+  try {
+    await mkdir(path.join(source, "src"), { recursive: true });
+    await writeFile(path.join(source, "src", "index.js"), "export const value = 1;");
+    const git = simpleGit(source);
+    await git.init();
+    await git.addConfig("user.name", "Nebula Test");
+    await git.addConfig("user.email", "nebula-test@example.com");
+    await git.add("src/index.js");
+    await git.commit("fixture commit");
+    const expectedSha = (await git.revparse(["HEAD"])).trim();
+
+    const cloned = await cloneRepo(source);
+    cloneDir = cloned.dir;
+
+    assert.equal(cloned.sha, expectedSha);
+    assert.equal(cloned.id.length, 10);
+    assert.equal((await listFiles(cloned.dir)).includes("src/index.js"), true);
+  } finally {
+    if (cloneDir) await rm(cloneDir, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+});
 
 test("listFiles returns relative POSIX paths and skips generated and binary files", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nebula-ingest-test-"));

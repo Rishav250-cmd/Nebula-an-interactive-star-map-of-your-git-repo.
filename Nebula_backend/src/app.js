@@ -1,1 +1,1 @@
-export { createApp, default } from "../index.js";
+export { app, createApp, default } from "../app.js";

@@ -24,8 +24,9 @@ export async function cloneRepo(url) {
   await rm(dir, { recursive: true, force: true });
   await mkdir(path.dirname(dir), { recursive: true });
   await simpleGit().clone(url, dir, ["--depth", "200"]);
+  const sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
 
-  return { id, dir };
+  return { id, dir, sha };
 }
 
 export async function listFiles(root) {
@@ -41,10 +42,10 @@ export async function listFiles(root) {
         : entry.name;
 
       if (entry.isDirectory()) {
-        if (!skippedDirectories.has(entry.name)) {
+        if (!shouldIgnoreEntry(relativePath, true)) {
           await visit(path.join(directory, entry.name), relativePath);
         }
-      } else if (entry.isFile() && !shouldSkipFile(entry.name)) {
+      } else if (entry.isFile() && !shouldIgnoreEntry(relativePath, false)) {
         files.push(relativePath);
       }
     }
@@ -81,11 +82,16 @@ export function buildTree(files) {
   return tree;
 }
 
-function shouldSkipFile(filename) {
+export function shouldIgnoreEntry(relativePath, isDirectory = false) {
+  const parts = relativePath.split(/[\\/]/).filter(Boolean);
+  const directoryParts = isDirectory ? parts : parts.slice(0, -1);
+  if (directoryParts.some((part) => skippedDirectories.has(part))) return true;
+
+  const filename = parts.at(-1) ?? "";
   const lowerName = filename.toLowerCase();
   const extension = path.extname(lowerName);
 
-  return (
+  return !isDirectory && (
     lowerName.endsWith(".lock") ||
     lowerName.endsWith("-lock.json") ||
     lowerName.endsWith(".min.js") ||
