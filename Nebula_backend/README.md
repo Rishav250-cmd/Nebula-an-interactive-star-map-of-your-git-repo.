@@ -24,49 +24,13 @@ The server listens on port `5000` by default. Set `PORT` in `.env` to use a diff
 
 `GET /api/mock-graph` serves the sample graph from the repository's `docs/mock-graph.json` file.
 
-`POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }`, shallow-clones the repository, and returns its ID, filtered file list, and nested directory tree. The clone directory is recorded in memory for later analysis endpoints and is held in the system temporary directory.
+`POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }`, shallow-clones the repository, builds its graph, and returns `{ "id": string, "status": "ready" }`. The clone directory, URL, and cached graph are recorded in memory.
 
-## Build a repository graph
+## Graph endpoints
 
-`POST /api/graph` accepts a public GitHub repository URL:
+`POST /api/graph` accepts the same `{ "url": "https://github.com/owner/repo" }` body and returns the graph with an extra `id` field. `GET /api/graph/:id` returns the cached graph, or builds and caches it if needed. Unknown IDs return HTTP `404`.
 
-```sh
-curl -X POST http://localhost:5000/api/graph \
-  -H 'content-type: application/json' \
-  -d '{"repoUrl":"https://github.com/octocat/hello-world"}'
-```
-
-The response includes repository metadata, source-file nodes, and directed edges for resolved, repo-relative imports:
-
-```json
-{
-  "repository": {
-    "name": "octocat/hello-world",
-    "url": "https://github.com/octocat/hello-world",
-    "defaultBranch": "main",
-    "commit": "<commit-sha>"
-  },
-  "nodes": [
-    {
-      "id": "src/index.ts",
-      "label": "index.ts",
-      "path": "src/index.ts",
-      "language": "ts"
-    }
-  ],
-  "edges": [
-    {
-      "id": "src/index.ts->src/lib.ts",
-      "source": "src/index.ts",
-      "target": "src/lib.ts"
-    }
-  ]
-}
-```
-
-The analyzer currently reads JavaScript and TypeScript files, and resolves literal relative imports. Package imports such as `react`, path aliases, and computed imports are not included. It analyzes at most 200 source files of up to 512 KiB each; larger Git trees or source sets return HTTP `413`.
-
-GitHub access uses its [repository API](https://docs.github.com/en/rest/repos/repos) and [Git trees API](https://docs.github.com/en/rest/git/trees), then reads source files at the selected commit.
+The graph includes `repo`, the checked-out `sha`, source-file `nodes`, resolved import `edges`, an empty `cycles` list, and `warnings`. Source files are read directly from the local clone; the analyzer does not request file contents from the GitHub API. It includes `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, and `.cjs` files up to 1 MB, and analyzes at most 2,000 code files sorted by path. Relative imports and configured TypeScript path aliases can resolve to graph edges; package imports are omitted.
 
 ## Verify
 

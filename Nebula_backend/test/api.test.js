@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import test from "node:test";
-import { getAnalysis } from "../services/store.js";
-import { createApp } from "../src/app.js";
+import { getAnalysis, storeAnalysis } from "../services/store.js";
+import { createApp } from "../app.js";
 
 test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nebula-api-test-"));
@@ -39,6 +39,7 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
       assert.equal(analyzeResponse.status, 200);
       assert.deepEqual(await analyzeResponse.json(), { id: "analysis-fixture", status: "ready" });
       assert.equal(getAnalysis("analysis-fixture").dir, root);
+      assert.equal(getAnalysis("analysis-fixture").url, "https://github.com/octocat/demo");
 
       const graphResponse = await fetch(`${baseUrl}/api/graph/analysis-fixture`);
       const graph = await graphResponse.json();
@@ -111,7 +112,79 @@ test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => 
     const response = await fetch(`${baseUrl}/api/graph/missing-analysis`);
 
     assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), { error: "Analysis not found." });
+    assert.deepEqual(await response.json(), { error: "Unknown repository id" });
+  });
+});
+
+test("POST /api/graph uses the shared clone/build pipeline and includes the id", async () => {
+  const graph = {
+    repo: "https://github.com/octocat/demo",
+    sha: "fixture-sha",
+    nodes: [],
+    edges: [],
+    cycles: [],
+    warnings: [],
+  };
+  let buildArguments;
+  const app = createApp({
+    cloneRepoImpl: async () => ({ id: "direct-graph", dir: "/fixture/repo" }),
+    listFilesImpl: async () => ["src/index.ts"],
+    buildGraphImpl: async (options) => {
+      buildArguments = options;
+      return graph;
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/graph`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://github.com/octocat/demo" }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ...graph, id: "direct-graph" });
+    assert.deepEqual(buildArguments, {
+      id: "direct-graph",
+      dir: "/fixture/repo",
+      files: ["src/index.ts"],
+      repoUrl: "https://github.com/octocat/demo",
+    });
+    assert.equal(getAnalysis("direct-graph").graph, graph);
+  });
+});
+
+test("GET /api/graph/:id builds and caches a graph when it is not cached", async () => {
+  const graph = {
+    repo: "https://github.com/octocat/lazy",
+    sha: "lazy-sha",
+    nodes: [],
+    edges: [],
+    cycles: [],
+    warnings: [],
+  };
+  storeAnalysis({ id: "lazy-analysis", dir: "/fixture/lazy", url: graph.repo });
+  let buildCount = 0;
+  const app = createApp({
+    listFilesImpl: async (dir) => {
+      assert.equal(dir, "/fixture/lazy");
+      return ["index.js"];
+    },
+    buildGraphImpl: async () => {
+      buildCount += 1;
+      return graph;
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const firstResponse = await fetch(`${baseUrl}/api/graph/lazy-analysis`);
+    assert.equal(firstResponse.status, 200);
+    assert.deepEqual(await firstResponse.json(), graph);
+
+    const secondResponse = await fetch(`${baseUrl}/api/graph/lazy-analysis`);
+    assert.equal(secondResponse.status, 200);
+    assert.equal(buildCount, 1);
+    assert.equal(getAnalysis("lazy-analysis").graph, graph);
   });
 });
 
