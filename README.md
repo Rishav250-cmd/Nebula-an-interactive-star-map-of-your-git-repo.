@@ -2,6 +2,52 @@
 
 Nebula turns a public GitHub repository into an interactive dependency graph.
 
+## Backend
+
+The Express backend lives in `Nebula_backend/` and listens on port `5001`.
+
+### Install and run
+
+```sh
+cd Nebula_backend
+npm install
+npm start
+```
+
+### Analyze a GitHub repository
+
+`POST /api/analyze` clones and analyzes a public repository. Use the returned id to retrieve its graph:
+
+```sh
+API=http://localhost:5001
+ANALYSIS_ID=$(curl -fsS "$API/api/analyze" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://github.com/expressjs/express"}' | jq -r '.id')
+curl -fsS "$API/api/graph/$ANALYSIS_ID"
+```
+
+`GET /api/graph/:id` returns the graph with `repo`, `sha`, `nodes`, `edges`, `cycles`, and `warnings`. `POST /api/graph` is a convenience endpoint that accepts the same JSON body as `/api/analyze` and returns the graph immediately, with `id` included:
+
+```sh
+API=http://localhost:5001
+curl -fsS "$API/api/graph" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://github.com/expressjs/express"}'
+```
+
+### Upload a ZIP archive
+
+Upload a `.zip` file in the `file` form field (maximum 50 MB). The response contains the file list and tree; use its id to fetch the graph:
+
+```sh
+API=http://localhost:5001
+UPLOAD_ID=$(curl -fsS "$API/api/upload" \
+  -F 'file=@./repository.zip' | jq -r '.id')
+curl -fsS "$API/api/graph/$UPLOAD_ID"
+```
+
+The graph contract and placeholder fields are documented in [docs/contract.md](docs/contract.md).
+
 ## Frontend
 
 The React, Vite, and TypeScript frontend lives in `Nebula_Frontend/`.
