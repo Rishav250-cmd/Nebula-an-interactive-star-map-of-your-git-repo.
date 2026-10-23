@@ -42,6 +42,7 @@ export function GraphCanvas() {
   const graph = useGraphStore((state) => state.graph);
   const status = useGraphStore((state) => state.status);
   const error = useGraphStore((state) => state.error);
+  const progressMessage = useGraphStore((state) => state.progressMessage);
   const selectedId = useGraphStore((state) => state.selectedId);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
@@ -206,8 +207,14 @@ export function GraphCanvas() {
       aria-label="Interactive dependency graph"
       ref={containerRef}
     >
-      {(status === 'idle' || status === 'loading') && (
-        <p className="graph-state">Loading galaxy...</p>
+      {status === 'idle' && (
+        <p className="graph-state">Paste a public GitHub repository URL to map its dependencies.</p>
+      )}
+      {status === 'loading' && (
+        <p className="graph-state graph-state--loading" role="status" aria-live="polite">
+          <span className="loading-spinner" aria-hidden="true" />
+          {progressMessage ?? 'Preparing dependency atlas…'}
+        </p>
       )}
       {status === 'error' && (
         <p className="graph-state graph-state--error" role="alert">

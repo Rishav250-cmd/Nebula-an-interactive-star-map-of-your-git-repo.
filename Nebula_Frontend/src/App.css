@@ -109,6 +109,12 @@
   filter: brightness(1.12);
 }
 
+.analyze-button:disabled,
+.repo-input:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .analyze-button:active {
   transform: translateY(1px);
 }
@@ -262,6 +268,26 @@
   padding: 12px 16px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.graph-state--loading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid rgb(196 181 253 / 30%);
+  border-top-color: #c4b5fd;
+  border-radius: 50%;
+  animation: loading-spin 800ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to { transform: rotate(360deg); }
 }
 
 .graph-state--error {
