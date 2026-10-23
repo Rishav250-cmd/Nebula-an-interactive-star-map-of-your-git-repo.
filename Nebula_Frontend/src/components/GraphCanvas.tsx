@@ -19,6 +19,31 @@ type GraphInstance = ForceGraphMethods<
   LinkObject<GraphNode, GraphEdge>
 >;
 
+type LinkEndpoints = {
+  source?: unknown;
+  target?: unknown;
+};
+
+type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
+
+const OUTGOING_COLOR = 'rgba(196, 181, 253, 0.94)';
+const INCOMING_COLOR = 'rgba(94, 234, 212, 0.94)';
+
+function endpointId(endpoint: unknown): string | null {
+  if (typeof endpoint === 'string' || typeof endpoint === 'number') return String(endpoint);
+  if (typeof endpoint !== 'object' || endpoint === null || !('id' in endpoint)) return null;
+
+  const id = (endpoint as { id?: unknown }).id;
+  return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+}
+
+function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDirection {
+  if (!selectedId) return 'unrelated';
+  if (endpointId(link.source) === selectedId) return 'outgoing';
+  if (endpointId(link.target) === selectedId) return 'incoming';
+  return 'unrelated';
+}
+
 function folderColor(folder: string): string {
   const topLevelFolder = folder.split('/')[0] || '(root)';
   let hash = 2166136261;
@@ -47,6 +72,7 @@ export function GraphCanvas() {
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
   const selectNode = useGraphStore((state) => state.selectNode);
+  const focusNode = useGraphStore((state) => state.focusNode);
   const hoverNode = useGraphStore((state) => state.hoverNode);
 
   const containerRef = useRef<HTMLElement | null>(null);
@@ -70,6 +96,21 @@ export function GraphCanvas() {
     ),
     [graph],
   );
+
+  const relatedNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!selectedId) return ids;
+    ids.add(selectedId);
+
+    for (const edge of graphData.links) {
+      const sourceId = endpointId(edge.source);
+      const targetId = endpointId(edge.target);
+      if (sourceId === selectedId && targetId) ids.add(targetId);
+      if (targetId === selectedId && sourceId) ids.add(sourceId);
+    }
+
+    return ids;
+  }, [graphData.links, selectedId]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -135,8 +176,10 @@ export function GraphCanvas() {
     const radius = Math.max(4, Math.min(14, 2 + Math.sqrt(loc) * 0.45));
     const isSelected = id === selectedId;
     const isHovered = id === hoveredId;
+    const isRelated = relatedNodeIds.has(id);
 
     context.save();
+    if (selectedId && !isRelated) context.globalAlpha = 0.17;
     const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 2.7);
     glow.addColorStop(0, withAlpha(color, 0.95));
     glow.addColorStop(0.38, withAlpha(color, 0.3));
@@ -173,6 +216,14 @@ export function GraphCanvas() {
       context.stroke();
     }
 
+    if (selectedId && isRelated && !isSelected) {
+      context.beginPath();
+      context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(94, 234, 212, 0.6)';
+      context.lineWidth = 1 / zoomScale;
+      context.stroke();
+    }
+
     if (globalScale > 1.5) {
       const fileName = node.id?.toString().split('/').pop() ?? '';
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
@@ -185,7 +236,32 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [colorById, hoveredId, selectedId]);
+  }, [colorById, hoveredId, relatedNodeIds, selectedId]);
+
+  const getLinkColor = useCallback((link: LinkEndpoints) => {
+    const direction = edgeDirection(link, selectedId);
+    if (direction === 'outgoing') return OUTGOING_COLOR;
+    if (direction === 'incoming') return INCOMING_COLOR;
+    return selectedId ? 'rgba(148, 163, 184, 0.07)' : 'rgba(148, 163, 184, 0.3)';
+  }, [selectedId]);
+
+  const getLinkWidth = useCallback((link: LinkEndpoints) => (
+    edgeDirection(link, selectedId) === 'unrelated'
+      ? (selectedId ? 0.35 : 0.8)
+      : 1.8
+  ), [selectedId]);
+
+  const getLinkParticles = useCallback((link: LinkEndpoints) => {
+    if (!selectedId) return 1;
+    return edgeDirection(link, selectedId) === 'unrelated' ? 0 : 2;
+  }, [selectedId]);
+
+  const getParticleColor = useCallback((link: LinkEndpoints) => {
+    const direction = edgeDirection(link, selectedId);
+    if (direction === 'outgoing') return OUTGOING_COLOR;
+    if (direction === 'incoming') return INCOMING_COLOR;
+    return 'rgba(148, 163, 184, 0.68)';
+  }, [selectedId]);
 
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
@@ -229,14 +305,21 @@ export function GraphCanvas() {
           graphData={graphData}
           backgroundColor="rgba(0, 0, 0, 0)"
           nodeCanvasObject={drawNode}
-          linkColor="rgba(148, 163, 184, 0.3)"
-          linkWidth={0.8}
+          linkColor={getLinkColor}
+          linkWidth={getLinkWidth}
           linkDirectionalArrowLength={4}
-          linkDirectionalArrowColor="rgba(148, 163, 184, 0.62)"
+          linkDirectionalArrowColor={getLinkColor}
           linkDirectionalArrowRelPos={0.9}
+          linkDirectionalParticles={getLinkParticles}
+          linkDirectionalParticleSpeed={0.006}
+          linkDirectionalParticleWidth={1.8}
+          linkDirectionalParticleColor={getParticleColor}
           onEngineStop={handleEngineStop}
           onNodeHover={handleNodeHover}
-          onNodeClick={(node) => selectNode(node.id == null ? null : String(node.id))}
+          onNodeClick={(node) => {
+            if (node.id != null) focusNode(String(node.id));
+            else selectNode(null);
+          }}
           onBackgroundClick={() => selectNode(null)}
           showPointerCursor={(object) => Boolean(object && 'id' in object)}
           enableNodeDrag
