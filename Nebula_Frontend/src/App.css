@@ -120,7 +120,7 @@
 
 .repo-summary {
   position: relative;
-  flex: 0 1 190px;
+  flex: 0 1 230px;
   min-width: 120px;
   color: var(--text-muted);
   font-size: 10px;

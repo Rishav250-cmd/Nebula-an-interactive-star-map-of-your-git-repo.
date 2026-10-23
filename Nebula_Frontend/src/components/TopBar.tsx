@@ -6,6 +6,18 @@ const EXAMPLE_REPOSITORIES = [
   { label: 'sindresorhus/is', url: 'https://github.com/sindresorhus/is' },
 ];
 
+function repositoryName(repositoryUrl: string): string {
+  try {
+    const pathParts = new URL(repositoryUrl).pathname.split('/').filter(Boolean);
+    const [owner, repository] = pathParts;
+    if (owner && repository) return `${owner}/${repository.replace(/\.git$/i, '')}`;
+  } catch {
+    // Keep the backend value visible if it is not a URL.
+  }
+
+  return repositoryUrl;
+}
+
 type TopBarProps = {
   onAnalyze: (url: string) => void;
 };
@@ -72,7 +84,9 @@ export function TopBar({ onAnalyze }: TopBarProps) {
       </form>
       {hasGraph && (
         <div className="repo-summary" aria-live="polite">
-          <div className="repo-summary-name" title={graph.repo}>{graph.repo}</div>
+          <div className="repo-summary-name" title={graph.repo} aria-label={graph.repo}>
+            {repositoryName(graph.repo)}
+          </div>
           <div className="repo-summary-counts">
             {graph.nodes.length.toLocaleString()} nodes · {graph.edges.length.toLocaleString()} edges
           </div>
