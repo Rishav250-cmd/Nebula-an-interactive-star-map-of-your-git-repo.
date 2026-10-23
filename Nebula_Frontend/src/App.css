@@ -497,7 +497,8 @@
 
 .code-content {
   max-height: calc(100vh - 185px);
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   margin: 14px -8px 0;
   padding: 0;
   color: #dbe4f0;

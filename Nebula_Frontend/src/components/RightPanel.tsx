@@ -1,7 +1,32 @@
 import { useEffect, useMemo, useState } from 'react';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
 import { fetchRepositoryFile, type FileResponse } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
 import { buildAdjacency } from '../lib/graphHighlight';
+
+SyntaxHighlighter.registerLanguage('javascript', javascript);
+SyntaxHighlighter.registerLanguage('jsx', jsx);
+SyntaxHighlighter.registerLanguage('typescript', typescript);
+SyntaxHighlighter.registerLanguage('tsx', tsx);
+
+const HIGHLIGHT_LANGUAGES: Record<string, string> = {
+  js: 'javascript',
+  javascript: 'javascript',
+  jsx: 'jsx',
+  ts: 'typescript',
+  typescript: 'typescript',
+  tsx: 'tsx',
+};
+
+function syntaxLanguage(language: string, path: string): string | undefined {
+  const extension = path.split('.').pop()?.toLowerCase() ?? '';
+  return HIGHLIGHT_LANGUAGES[extension] ?? HIGHLIGHT_LANGUAGES[language.toLowerCase()];
+}
 
 type FileLoadState =
   | { key: null; status: 'idle' }
@@ -66,14 +91,42 @@ export function RightPanel() {
       {visibleState.status === 'loading' && <p className="panel-placeholder" role="status">Loading source…</p>}
       {visibleState.status === 'error' && <p className="code-error" role="alert">{visibleState.message}</p>}
       {file && (
-        <pre
+        <div
           className="code-content"
           role="region"
           tabIndex={0}
           aria-label={`Source code for ${selectedId}`}
         >
-          <code>{file.content}</code>
-        </pre>
+          <SyntaxHighlighter
+            language={syntaxLanguage(file.language, selectedId ?? '')}
+            style={vscDarkPlus}
+            showLineNumbers
+            showInlineLineNumbers={false}
+            lineNumberContainerStyle={{
+              position: 'sticky',
+              left: 0,
+              zIndex: 1,
+              float: 'left',
+              paddingRight: '10px',
+              backgroundColor: '#0d1020',
+            }}
+            lineNumberStyle={{ color: '#7b849b' }}
+            wrapLongLines={false}
+            customStyle={{
+              width: 'max-content',
+              minWidth: '100%',
+              margin: 0,
+              padding: 0,
+              overflow: 'visible',
+              background: 'transparent',
+              fontSize: 'inherit',
+              lineHeight: 'inherit',
+            }}
+            codeTagProps={{ style: { whiteSpace: 'pre', font: 'inherit' } }}
+          >
+            {file.content}
+          </SyntaxHighlighter>
+        </div>
       )}
     </aside>
   );
