@@ -52,7 +52,17 @@ The graph contract and placeholder fields are documented in [docs/contract.md](d
 
 The React, Vite, and TypeScript frontend lives in `Nebula_Frontend/`.
 
-### Install and run
+### Run both servers
+
+Start the backend in one terminal:
+
+```sh
+cd Nebula_backend
+npm install
+npm start
+```
+
+It listens on `http://localhost:5001`. In a second terminal, start the frontend:
 
 ```sh
 cd Nebula_Frontend
@@ -60,18 +70,34 @@ npm install
 npm run dev
 ```
 
-### Configuration
+Vite prints the frontend URL, usually `http://localhost:5173`.
 
-Set `VITE_API_URL` in `Nebula_Frontend/.env` to the backend base URL. Start from
-the provided example with:
+### API configuration and analyze flow
+
+The frontend uses `VITE_API_URL` as the backend base URL and defaults to
+`http://localhost:5001`. To override it, copy the example and edit
+`Nebula_Frontend/.env`:
 
 ```sh
+cd Nebula_Frontend
 cp .env.example .env
 ```
 
-The default API URL is `http://localhost:5001`. The frontend requests the mock
-graph from `/api/mock-graph` and uses its local mock file if the API is
-unavailable.
+Set the backend base URL in that file:
+
+```dotenv
+VITE_API_URL=http://localhost:5001
+```
+
+When a user submits a GitHub URL, the frontend calls `POST /api/analyze` with
+`{ "url": "..." }`, then calls `GET /api/graph/:id` with the returned analysis
+id. The graph response supplies the repository metadata, nodes, edges, cycles,
+and warnings. The code panel and search use `GET /api/file` and `GET /api/search`.
+
+Append `?mock=1` to the frontend URL (for example,
+`http://localhost:5173/?mock=1`) to load the mock graph. It tries the backend's
+`/api/mock-graph` endpoint and falls back to the local fixture if that endpoint
+is unavailable.
 
 ### Source structure
 
@@ -87,14 +113,21 @@ Nebula_Frontend/src/
 └── main.tsx                   # React entry point
 ```
 
-### Focusing a graph node
+### Shared graph store actions
 
-Other components can focus a file through the shared store action:
+Other components can use these actions from `useGraphStore`:
 
 ```ts
+const analyze = useGraphStore((state) => state.analyze);
+const selectNode = useGraphStore((state) => state.selectNode);
 const focusNode = useGraphStore((state) => state.focusNode);
+
+void analyze('https://github.com/expressjs/express');
+selectNode('lib/express.js');
 focusNode('src/api.js');
 ```
 
-`focusNode(id: string)` selects the node and increments `focusRequest`; the
-graph watches that request to center and zoom to the selected file.
+`analyze(url)` runs the full repository analysis flow. `selectNode(id)` sets or
+clears the current selection; pass `null` to clear it. `focusNode(id)` selects
+the file and increments `focusRequest`, which tells the graph to center and zoom
+to it, including when the same file is focused again.

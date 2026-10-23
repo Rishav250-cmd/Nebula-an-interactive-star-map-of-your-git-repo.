@@ -5,7 +5,7 @@ export type GraphNode = {
   tokens: number;
   complexity: number;
   churn: number;
-  healthScore: number;
+  healthScore: number | null;
   isGodFile: boolean;
   inCycle: boolean;
   fanIn: number;
@@ -18,10 +18,21 @@ export type GraphEdge = {
   type: 'import' | 'call';
 };
 
+export type GraphWarning = {
+  file: string;
+  message: string;
+};
+
+export type AnalyzeResponse = {
+  id: string;
+  status: 'ready';
+};
+
 export type GraphData = {
   repo: string;
   sha: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
   cycles: string[][];
+  warnings: GraphWarning[];
 };

@@ -61,5 +61,6 @@ export function generateMockGraph(): GraphData {
     nodes: nodes.map((node, index) => ({ ...node, fanIn: fanIn[index], fanOut: fanOut[index] })),
     edges,
     cycles: [],
+    warnings: [],
   };
 }

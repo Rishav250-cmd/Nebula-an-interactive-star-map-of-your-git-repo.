@@ -93,7 +93,7 @@ export function NodeTooltip({ containerRef }: NodeTooltipProps) {
       aria-label={`Details for ${node.id}`}
       style={{ left: position.x, top: position.y }}
     >
-      <strong className="node-tooltip__path">{node.id}</strong>
+      <strong className="node-tooltip__path" title={node.id}>{node.id}</strong>
       <dl className="node-tooltip__metrics">
         <div><dt>LOC</dt><dd>{displayValue(node.loc)}</dd></div>
         <div><dt>Complexity</dt><dd>{displayValue(node.complexity)}</dd></div>

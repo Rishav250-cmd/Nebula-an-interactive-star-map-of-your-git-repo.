@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import './App.css';
 import { fetchMockGraph } from './api/client';
 import { generateMockGraph } from './data/generateMock';
@@ -9,41 +9,35 @@ import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
 
 export default function App() {
+  const analyze = useGraphStore((state) => state.analyze);
   const setGraph = useGraphStore((state) => state.setGraph);
   const setStatus = useGraphStore((state) => state.setStatus);
 
   useEffect(() => {
     let isMounted = true;
-    setStatus('loading');
+    const params = new URLSearchParams(window.location.search);
 
-    if (new URLSearchParams(window.location.search).get('big') === '1') {
-      setGraph(generateMockGraph());
-      setStatus('ready');
-      return () => {
-        isMounted = false;
-      };
-    }
-
-    fetchMockGraph()
-      .then((graph) => {
+    if (params.get('mock') === '1') {
+      fetchMockGraph().then((graph) => {
         if (!isMounted) return;
         setGraph(graph);
         setStatus('ready');
-      })
-      .catch((error: unknown) => {
-        if (!isMounted) return;
-        const message = error instanceof Error ? error.message : 'Could not load graph data.';
-        setStatus('error', message);
       });
+    } else if (params.get('big') === '1') {
+      setGraph(generateMockGraph());
+      setStatus('ready');
+    }
 
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [setGraph, setStatus]);
+
+  const handleAnalyze = useCallback((url: string) => {
+    void analyze(url);
+  }, [analyze]);
 
   return (
     <div className="app-shell">
-      <TopBar />
+      <TopBar onAnalyze={handleAnalyze} />
       <div className="workspace">
         <LeftPanel />
         <GraphCanvas />
