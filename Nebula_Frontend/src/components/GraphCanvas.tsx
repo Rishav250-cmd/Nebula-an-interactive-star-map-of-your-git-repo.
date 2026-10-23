@@ -21,6 +21,31 @@ type GraphInstance = ForceGraphMethods<
 
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
 
+function uniqueLinks(edges: readonly GraphEdge[], nodeIds: ReadonlySet<string>): GraphEdge[] {
+  const seen = new Set<string>();
+  const links: GraphEdge[] = [];
+
+  for (const edge of edges) {
+    const { sourceId, targetId } = resolveEndpoints(edge);
+    if (!sourceId || !targetId || !nodeIds.has(sourceId) || !nodeIds.has(targetId)) continue;
+
+    const key = JSON.stringify([sourceId, targetId, edge.type]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push({ ...edge });
+  }
+
+  return links;
+}
+
+function truncateLabel(label: string, maxLength = 32): string {
+  if (label.length <= maxLength) return label;
+  const visibleLength = maxLength - 1;
+  const prefixLength = Math.ceil(visibleLength / 2);
+  const suffixLength = Math.floor(visibleLength / 2);
+  return `${label.slice(0, prefixLength)}…${label.slice(-suffixLength)}`;
+}
+
 const OUTGOING_COLOR = 'rgba(94, 234, 212, 0.96)';
 const INCOMING_COLOR = 'rgba(251, 191, 36, 0.96)';
 
@@ -61,11 +86,15 @@ export function GraphCanvas() {
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
-    () => ({
+    () => {
       // ForceGraph mutates nodes and links with simulation coordinates.
-      nodes: graph?.nodes.map((node) => ({ ...node })) ?? [],
-      links: graph?.edges.map((edge) => ({ ...edge })) ?? [],
-    }),
+      const nodes = graph?.nodes.map((node) => ({ ...node })) ?? [];
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      return {
+        nodes,
+        links: uniqueLinks(graph?.edges ?? [], nodeIds),
+      };
+    },
     [graph],
   );
 
@@ -243,7 +272,7 @@ export function GraphCanvas() {
     }
 
     if (globalScale > 1.6 || isHighlighted) {
-      const fileName = node.id?.toString().split('/').pop() ?? '';
+      const fileName = truncateLabel(node.id?.toString().split('/').pop() ?? '');
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
       context.textBaseline = 'middle';
