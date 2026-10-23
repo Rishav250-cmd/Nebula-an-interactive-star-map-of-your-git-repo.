@@ -5,6 +5,7 @@ import ForceGraph2D, {
   type LinkObject,
   type NodeObject,
 } from 'react-force-graph-2d';
+import { forceCollide } from 'd3-force-3d';
 import { NodeTooltip } from './NodeTooltip';
 import { LoadingOverlay } from './LoadingOverlay';
 import { ErrorState } from './ErrorState';
@@ -159,6 +160,18 @@ export function GraphCanvas() {
   }, [canvasSize.height, canvasSize.width, graphData.nodes.length]);
 
   useEffect(() => {
+    const graphInstance = graphRef.current;
+    if (!graphInstance || graphData.nodes.length === 0) return;
+
+    graphInstance.d3Force(
+      'collide',
+      forceCollide<NodeObject<GraphNode>>((node) => nodeRadius(node.loc) + 3),
+    );
+    graphInstance.d3Force('charge')?.strength(graphData.nodes.length > 40 ? -34 : -30);
+    graphInstance.d3ReheatSimulation();
+  }, [graphData]);
+
+  useEffect(() => {
     if (
       focusRequest === handledFocusRequest.current
       || !selectedId
@@ -221,20 +234,20 @@ export function GraphCanvas() {
 
     context.save();
     if (graphSelectedId && !isRelated) context.globalAlpha = 0.12;
-    const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 2.7);
-    glow.addColorStop(0, withAlpha(color, 0.95));
-    glow.addColorStop(0.38, withAlpha(color, 0.3));
+    const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.62);
+    glow.addColorStop(0, withAlpha(color, 0.57));
+    glow.addColorStop(0.38, withAlpha(color, 0.18));
     glow.addColorStop(1, withAlpha(color, 0));
     context.fillStyle = glow;
     context.beginPath();
-    context.arc(node.x, node.y, radius * 2.7, 0, Math.PI * 2);
+    context.arc(node.x, node.y, radius * 1.62, 0, Math.PI * 2);
     context.fill();
 
     context.beginPath();
     context.arc(node.x, node.y, radius, 0, Math.PI * 2);
     context.fillStyle = color;
     context.shadowColor = color;
-    context.shadowBlur = 10 / zoomScale;
+    context.shadowBlur = 6 / zoomScale;
     context.fill();
     context.shadowBlur = 0;
 
@@ -244,7 +257,7 @@ export function GraphCanvas() {
       context.strokeStyle = '#fb5266';
       context.lineWidth = 1.8 / zoomScale;
       context.shadowColor = '#f43f5e';
-      context.shadowBlur = 12 / zoomScale;
+      context.shadowBlur = 7.2 / zoomScale;
       context.stroke();
       context.shadowBlur = 0;
     }

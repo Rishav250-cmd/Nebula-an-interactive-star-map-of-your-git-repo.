@@ -107,5 +107,5 @@ export function folderLegend(allFolders: readonly string[], maxEntries = 8): Fol
 
 export function nodeRadius(loc: number): number {
   const safeLoc = Number.isFinite(loc) ? Math.max(0, loc) : 0;
-  return Math.max(3, Math.min(18, 2 + Math.sqrt(safeLoc) * 0.45));
+  return Math.max(3, Math.min(11, 2 + Math.sqrt(safeLoc) * 0.3));
 }
