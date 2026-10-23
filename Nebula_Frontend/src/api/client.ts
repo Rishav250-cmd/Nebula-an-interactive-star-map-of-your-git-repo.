@@ -7,6 +7,19 @@ export type AnalyzeResponse = {
   status: 'ready';
 };
 
+export type FileResponse = {
+  content: string;
+  language: string;
+  loc: number;
+};
+
+export type SearchResult = {
+  type: 'file' | 'symbol';
+  name: string;
+  path: string;
+  line: number;
+};
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
 
@@ -36,4 +49,22 @@ export function analyzeRepository(url: string, signal?: AbortSignal): Promise<An
 
 export function fetchGraph(id: string, signal?: AbortSignal): Promise<GraphData> {
   return requestJson<GraphData>(`/api/graph/${encodeURIComponent(id)}`, { signal });
+}
+
+export function fetchRepositoryFile(
+  id: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<FileResponse> {
+  const query = new URLSearchParams({ id, path });
+  return requestJson<FileResponse>(`/api/file?${query.toString()}`, { signal });
+}
+
+export function searchRepositoryFiles(
+  id: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
+  const params = new URLSearchParams({ id, q: query });
+  return requestJson<SearchResult[]>(`/api/search?${params.toString()}`, { signal });
 }

@@ -8,6 +8,7 @@ import ForceGraph2D, {
 import { NodeTooltip } from './NodeTooltip';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
+import { getNodeRelations, resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 
 const NODE_PALETTE = [
   '#8b7cff', '#14b8a6', '#38bdf8', '#f472b6',
@@ -19,28 +20,16 @@ type GraphInstance = ForceGraphMethods<
   LinkObject<GraphNode, GraphEdge>
 >;
 
-type LinkEndpoints = {
-  source?: unknown;
-  target?: unknown;
-};
-
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
 
 const OUTGOING_COLOR = 'rgba(196, 181, 253, 0.94)';
 const INCOMING_COLOR = 'rgba(94, 234, 212, 0.94)';
 
-function endpointId(endpoint: unknown): string | null {
-  if (typeof endpoint === 'string' || typeof endpoint === 'number') return String(endpoint);
-  if (typeof endpoint !== 'object' || endpoint === null || !('id' in endpoint)) return null;
-
-  const id = (endpoint as { id?: unknown }).id;
-  return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
-}
-
 function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDirection {
   if (!selectedId) return 'unrelated';
-  if (endpointId(link.source) === selectedId) return 'outgoing';
-  if (endpointId(link.target) === selectedId) return 'incoming';
+  const { sourceId, targetId } = resolveEndpoints(link);
+  if (sourceId === selectedId) return 'outgoing';
+  if (targetId === selectedId) return 'incoming';
   return 'unrelated';
 }
 
@@ -102,12 +91,9 @@ export function GraphCanvas() {
     if (!selectedId) return ids;
     ids.add(selectedId);
 
-    for (const edge of graphData.links) {
-      const sourceId = endpointId(edge.source);
-      const targetId = endpointId(edge.target);
-      if (sourceId === selectedId && targetId) ids.add(targetId);
-      if (targetId === selectedId && sourceId) ids.add(sourceId);
-    }
+    const relations = getNodeRelations(graphData.links, selectedId);
+    relations.imports.forEach((id) => ids.add(id));
+    relations.importers.forEach((id) => ids.add(id));
 
     return ids;
   }, [graphData.links, selectedId]);
