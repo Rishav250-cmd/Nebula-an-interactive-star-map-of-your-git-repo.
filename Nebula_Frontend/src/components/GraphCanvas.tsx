@@ -78,16 +78,17 @@ export function GraphCanvas() {
   ), [colorByFolder, graph]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
+  const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
 
   const relatedNodeIds = useMemo(() => {
     const ids = new Set<string>();
-    if (!selectedId) return ids;
-    ids.add(selectedId);
-    adjacency.imports.get(selectedId)?.forEach((id) => ids.add(id));
-    adjacency.importers.get(selectedId)?.forEach((id) => ids.add(id));
+    if (!graphSelectedId) return ids;
+    ids.add(graphSelectedId);
+    adjacency.imports.get(graphSelectedId)?.forEach((id) => ids.add(id));
+    adjacency.importers.get(graphSelectedId)?.forEach((id) => ids.add(id));
 
     return ids;
-  }, [adjacency, selectedId]);
+  }, [adjacency, graphSelectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -131,17 +132,34 @@ export function GraphCanvas() {
     ) return;
     handledFocusRequest.current = focusRequest;
 
-    let frames = 0;
+    const node = graphData.nodes.find((candidate) => candidate.id === selectedId);
+    if (!node) return;
+
+    const startedAt = performance.now();
+    let lastX: number | null = null;
+    let lastY: number | null = null;
+    let stableFrames = 0;
     let frameId = 0;
     const focusSelectedNode = () => {
-      const node = graphData.nodes.find((candidate) => candidate.id === selectedId);
       if (node && typeof node.x === 'number' && typeof node.y === 'number') {
-        graphRef.current?.centerAt(node.x, node.y, 450);
-        graphRef.current?.zoom(3, 450);
-        return;
+        if (lastX !== null && lastY !== null && Math.hypot(node.x - lastX, node.y - lastY) < 0.15) {
+          stableFrames += 1;
+        } else {
+          stableFrames = 0;
+        }
+        lastX = node.x;
+        lastY = node.y;
+
+        if (stableFrames >= 5 || performance.now() - startedAt >= 4_000) {
+          graphRef.current?.centerAt(node.x, node.y, 450);
+          graphRef.current?.zoom(3, 450);
+          return;
+        }
       }
 
-      if (frames++ < 60) frameId = requestAnimationFrame(focusSelectedNode);
+      if (performance.now() - startedAt < 5_000) {
+        frameId = requestAnimationFrame(focusSelectedNode);
+      }
     };
 
     frameId = requestAnimationFrame(focusSelectedNode);
@@ -160,15 +178,15 @@ export function GraphCanvas() {
     const zoomScale = Math.max(globalScale, 0.01);
     const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
     const radius = nodeRadius(loc);
-    const isSelected = id === selectedId;
-    const isHovered = selectedId === null && id === hoveredId;
+    const isGraphSelected = id === graphSelectedId;
+    const isHovered = graphSelectedId === null && id === hoveredId;
     const isRelated = relatedNodeIds.has(id);
-    const isHighlighted = isSelected || isHovered || (selectedId !== null && isRelated);
-    const isImport = selectedId !== null && adjacency.imports.get(selectedId)?.has(id) === true;
-    const isImporter = selectedId !== null && adjacency.importers.get(selectedId)?.has(id) === true;
+    const isHighlighted = isGraphSelected || isHovered || (graphSelectedId !== null && isRelated);
+    const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
+    const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
 
     context.save();
-    if (selectedId && !isRelated) context.globalAlpha = 0.12;
+    if (graphSelectedId && !isRelated) context.globalAlpha = 0.12;
     const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 2.7);
     glow.addColorStop(0, withAlpha(color, 0.95));
     glow.addColorStop(0.38, withAlpha(color, 0.3));
@@ -197,15 +215,15 @@ export function GraphCanvas() {
       context.shadowBlur = 0;
     }
 
-    if (isSelected || isHovered) {
+    if (isGraphSelected || isHovered) {
       context.beginPath();
-      context.arc(node.x, node.y, radius + (isSelected ? 5 : 4) / zoomScale, 0, Math.PI * 2);
-      context.strokeStyle = isSelected ? '#c4b5fd' : '#5eead4';
+      context.arc(node.x, node.y, radius + (isGraphSelected ? 5 : 4) / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = isGraphSelected ? '#c4b5fd' : '#5eead4';
       context.lineWidth = 1.4 / zoomScale;
       context.stroke();
     }
 
-    if (selectedId && isRelated && !isSelected) {
+    if (graphSelectedId && isRelated && !isGraphSelected) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = isImport && isImporter
@@ -229,7 +247,7 @@ export function GraphCanvas() {
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
       context.textBaseline = 'middle';
-      context.fillStyle = isSelected
+      context.fillStyle = isGraphSelected
         ? '#f8fafc'
         : isImport
           ? '#5eead4'
@@ -242,28 +260,28 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, colorById, hoveredId, relatedNodeIds, selectedId]);
+  }, [adjacency, colorById, graphSelectedId, hoveredId, relatedNodeIds]);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
-    const direction = edgeDirection(link, selectedId);
+    const direction = edgeDirection(link, graphSelectedId);
     if (direction === 'outgoing') return OUTGOING_COLOR;
     if (direction === 'incoming') return INCOMING_COLOR;
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
-    return withAlpha(sourceColor, selectedId ? 0.12 : 0.28);
-  }, [colorById, selectedId]);
+    return withAlpha(sourceColor, graphSelectedId ? 0.12 : 0.28);
+  }, [colorById, graphSelectedId]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => (
-    edgeDirection(link, selectedId) === 'unrelated'
-      ? (selectedId ? 0.35 : 0.7)
+    edgeDirection(link, graphSelectedId) === 'unrelated'
+      ? (graphSelectedId ? 0.35 : 0.7)
       : 1.8
-  ), [selectedId]);
+  ), [graphSelectedId]);
 
   const getLinkParticles = useCallback((link: LinkEndpoints) => {
     if ((graph?.edges.length ?? 0) > 1500) return 0;
-    if (!selectedId) return 2;
-    return edgeDirection(link, selectedId) === 'unrelated' ? 0 : 2;
-  }, [graph?.edges.length, selectedId]);
+    if (!graphSelectedId) return 2;
+    return edgeDirection(link, graphSelectedId) === 'unrelated' ? 0 : 2;
+  }, [graph?.edges.length, graphSelectedId]);
 
   const getParticleColor = useCallback((link: LinkEndpoints) => {
     const { sourceId } = resolveEndpoints(link);
@@ -273,8 +291,16 @@ export function GraphCanvas() {
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
     hasFittedGraph.current = true;
-    graphRef.current?.zoomToFit(450, 48);
-  }, [graphData.nodes.length]);
+    const selectedNode = graphSelectedId
+      ? graphData.nodes.find((node) => node.id === graphSelectedId)
+      : null;
+    if (selectedNode && typeof selectedNode.x === 'number' && typeof selectedNode.y === 'number') {
+      graphRef.current?.centerAt(selectedNode.x, selectedNode.y, 450);
+      graphRef.current?.zoom(3, 450);
+    } else {
+      graphRef.current?.zoomToFit(450, 48);
+    }
+  }, [graphData.nodes, graphSelectedId]);
 
   const handleNodeHover = useCallback((node: NodeObject<GraphNode> | null) => {
     const id = node?.id == null ? null : String(node.id);
