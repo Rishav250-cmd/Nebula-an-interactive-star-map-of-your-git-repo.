@@ -154,6 +154,11 @@ export function GraphCanvas() {
   }, [graph]);
 
   useEffect(() => {
+    if (!hasFittedGraph.current || graphData.nodes.length === 0) return;
+    graphRef.current?.zoomToFit(600, 60);
+  }, [canvasSize.height, canvasSize.width, graphData.nodes.length]);
+
+  useEffect(() => {
     if (
       focusRequest === handledFocusRequest.current
       || !selectedId
@@ -320,16 +325,8 @@ export function GraphCanvas() {
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
     hasFittedGraph.current = true;
-    const selectedNode = graphSelectedId
-      ? graphData.nodes.find((node) => node.id === graphSelectedId)
-      : null;
-    if (selectedNode && typeof selectedNode.x === 'number' && typeof selectedNode.y === 'number') {
-      graphRef.current?.centerAt(selectedNode.x, selectedNode.y, 450);
-      graphRef.current?.zoom(3, 450);
-    } else {
-      graphRef.current?.zoomToFit(450, 48);
-    }
-  }, [graphData.nodes, graphSelectedId]);
+    graphRef.current?.zoomToFit(600, 60);
+  }, [graphData.nodes]);
 
   const handleNodeHover = useCallback((node: NodeObject<GraphNode> | null) => {
     const id = node?.id == null ? null : String(node.id);
