@@ -6,6 +6,8 @@ import ForceGraph2D, {
   type NodeObject,
 } from 'react-force-graph-2d';
 import { NodeTooltip } from './NodeTooltip';
+import { LoadingOverlay } from './LoadingOverlay';
+import { ErrorState } from './ErrorState';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { getNodeRelations, resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
@@ -54,9 +56,11 @@ function withAlpha(color: string, alpha: number): string {
 
 export function GraphCanvas() {
   const graph = useGraphStore((state) => state.graph);
-  const status = useGraphStore((state) => state.status);
+  const phase = useGraphStore((state) => state.phase);
+  const phaseStartedAt = useGraphStore((state) => state.phaseStartedAt);
   const error = useGraphStore((state) => state.error);
-  const progressMessage = useGraphStore((state) => state.progressMessage);
+  const lastUrl = useGraphStore((state) => state.lastUrl);
+  const analyze = useGraphStore((state) => state.analyze);
   const selectedId = useGraphStore((state) => state.selectedId);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
@@ -265,25 +269,24 @@ export function GraphCanvas() {
 
   return (
     <main
-      className={`graph-canvas${status === 'ready' ? ' graph-canvas--interactive' : ''}`}
+      className={`graph-canvas${phase === 'ready' ? ' graph-canvas--interactive' : ''}`}
       aria-label="Interactive dependency graph"
       ref={containerRef}
     >
-      {status === 'idle' && (
-        <p className="graph-state">Paste a public GitHub repository URL to map its dependencies.</p>
+      {phase === 'idle' && !graph && (
+        <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
-      {status === 'loading' && (
-        <p className="graph-state graph-state--loading" role="status" aria-live="polite">
-          <span className="loading-spinner" aria-hidden="true" />
-          {progressMessage ?? 'Preparing dependency atlas…'}
-        </p>
+      {(phase === 'cloning' || phase === 'parsing') && (
+        <LoadingOverlay phase={phase} phaseStartedAt={phaseStartedAt} />
       )}
-      {status === 'error' && (
-        <p className="graph-state graph-state--error" role="alert">
-          {error ?? 'Could not load graph data.'}
-        </p>
+      {phase === 'error' && (
+        <ErrorState
+          error={error ?? 'Could not load graph data.'}
+          lastUrl={lastUrl}
+          onRetry={(url) => { void analyze(url); }}
+        />
       )}
-      {status === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+      {phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
         <ForceGraph2D<GraphNode, GraphEdge>
           ref={graphRef}
           width={canvasSize.width}

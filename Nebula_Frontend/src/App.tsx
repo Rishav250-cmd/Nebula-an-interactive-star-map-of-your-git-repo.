@@ -9,7 +9,6 @@ import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
 
 export default function App() {
-  const repoUrl = useGraphStore((state) => state.repoUrl);
   const analyze = useGraphStore((state) => state.analyze);
   const setGraph = useGraphStore((state) => state.setGraph);
   const setStatus = useGraphStore((state) => state.setStatus);
@@ -32,9 +31,9 @@ export default function App() {
     return () => { isMounted = false; };
   }, [setGraph, setStatus]);
 
-  const handleAnalyze = useCallback(() => {
-    void analyze(repoUrl);
-  }, [analyze, repoUrl]);
+  const handleAnalyze = useCallback((url: string) => {
+    void analyze(url);
+  }, [analyze]);
 
   return (
     <div className="app-shell">
