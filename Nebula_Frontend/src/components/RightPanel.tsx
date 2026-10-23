@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchRepositoryFile, type FileResponse } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
+import { buildAdjacency } from '../lib/graphHighlight';
 
 type FileLoadState =
   | { key: null; status: 'idle' }
@@ -10,7 +11,9 @@ type FileLoadState =
 
 export function RightPanel() {
   const analysisId = useGraphStore((state) => state.analysisId);
+  const graph = useGraphStore((state) => state.graph);
   const selectedId = useGraphStore((state) => state.selectedId);
+  const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const [fileState, setFileState] = useState<FileLoadState>({ key: null, status: 'idle' });
   const requestKey = analysisId && selectedId ? `${analysisId}\0${selectedId}` : null;
 
@@ -52,6 +55,11 @@ export function RightPanel() {
         <h2 className="panel-title" id="code-title">Code</h2>
         {file && <span className="code-language">{file.language}</span>}
       </div>
+      {selectedId && graph?.nodes.some((node) => node.id === selectedId) && (
+        <p className="relation-count-chip" aria-label="Selected file relationships">
+          {adjacency.imports.get(selectedId)?.size ?? 0} imports · {adjacency.importers.get(selectedId)?.size ?? 0} importers
+        </p>
+      )}
       {selectedId && <p className="code-file-path" title={selectedId}>{selectedId}</p>}
       {file && <p className="code-loc">{file.loc.toLocaleString()} lines</p>}
       {!selectedId && <p className="panel-placeholder">Select a file to view its code.</p>}

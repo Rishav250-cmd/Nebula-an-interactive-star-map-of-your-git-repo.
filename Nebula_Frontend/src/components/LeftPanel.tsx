@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { getNodeRelations } from '../utils/graphEdges';
+import { buildAdjacency } from '../lib/graphHighlight';
 import { useGraphStore } from '../store/useGraphStore';
 import { ImportList } from './ImportList';
 import { SearchBar } from './SearchBar';
@@ -8,9 +8,15 @@ export function LeftPanel() {
   const graph = useGraphStore((state) => state.graph);
   const selectedId = useGraphStore((state) => state.selectedId);
   const selectedNode = graph?.nodes.find((node) => node.id === selectedId) ?? null;
+  const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const relations = useMemo(() => (
-    graph && selectedId ? getNodeRelations(graph.edges, selectedId) : { imports: [], importers: [] }
-  ), [graph, selectedId]);
+    selectedId
+      ? {
+        imports: [...(adjacency.imports.get(selectedId) ?? [])],
+        importers: [...(adjacency.importers.get(selectedId) ?? [])],
+      }
+      : { imports: [], importers: [] }
+  ), [adjacency, selectedId]);
 
   return (
     <aside className="side-panel side-panel--left" aria-labelledby="explore-title">

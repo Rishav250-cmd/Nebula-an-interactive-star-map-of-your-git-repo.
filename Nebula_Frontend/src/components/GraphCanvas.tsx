@@ -11,7 +11,8 @@ import { ErrorState } from './ErrorState';
 import { GraphLegend } from './GraphLegend';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
-import { getNodeRelations, resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
+import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
+import { buildAdjacency } from '../lib/graphHighlight';
 import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
 type GraphInstance = ForceGraphMethods<
   NodeObject<GraphNode>,
@@ -20,8 +21,8 @@ type GraphInstance = ForceGraphMethods<
 
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
 
-const OUTGOING_COLOR = 'rgba(196, 181, 253, 0.94)';
-const INCOMING_COLOR = 'rgba(94, 234, 212, 0.94)';
+const OUTGOING_COLOR = 'rgba(94, 234, 212, 0.96)';
+const INCOMING_COLOR = 'rgba(251, 191, 36, 0.96)';
 
 function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDirection {
   if (!selectedId) return 'unrelated';
@@ -76,18 +77,26 @@ export function GraphCanvas() {
     graph?.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const) ?? [],
   ), [colorByFolder, graph]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
+  const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
 
   const relatedNodeIds = useMemo(() => {
     const ids = new Set<string>();
     if (!selectedId) return ids;
     ids.add(selectedId);
-
-    const relations = getNodeRelations(graphData.links, selectedId);
-    relations.imports.forEach((id) => ids.add(id));
-    relations.importers.forEach((id) => ids.add(id));
+    adjacency.imports.get(selectedId)?.forEach((id) => ids.add(id));
+    adjacency.importers.get(selectedId)?.forEach((id) => ids.add(id));
 
     return ids;
-  }, [graphData.links, selectedId]);
+  }, [adjacency, selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const clearSelectionOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') selectNode(null);
+    };
+    window.addEventListener('keydown', clearSelectionOnEscape);
+    return () => window.removeEventListener('keydown', clearSelectionOnEscape);
+  }, [selectedId, selectNode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -152,12 +161,14 @@ export function GraphCanvas() {
     const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
     const radius = nodeRadius(loc);
     const isSelected = id === selectedId;
-    const isHovered = id === hoveredId;
+    const isHovered = selectedId === null && id === hoveredId;
     const isRelated = relatedNodeIds.has(id);
     const isHighlighted = isSelected || isHovered || (selectedId !== null && isRelated);
+    const isImport = selectedId !== null && adjacency.imports.get(selectedId)?.has(id) === true;
+    const isImporter = selectedId !== null && adjacency.importers.get(selectedId)?.has(id) === true;
 
     context.save();
-    if (selectedId && !isRelated) context.globalAlpha = 0.17;
+    if (selectedId && !isRelated) context.globalAlpha = 0.12;
     const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 2.7);
     glow.addColorStop(0, withAlpha(color, 0.95));
     glow.addColorStop(0.38, withAlpha(color, 0.3));
@@ -197,9 +208,20 @@ export function GraphCanvas() {
     if (selectedId && isRelated && !isSelected) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
-      context.strokeStyle = 'rgba(94, 234, 212, 0.6)';
+      context.strokeStyle = isImport && isImporter
+        ? '#5eead4'
+        : isImport
+          ? '#5eead4'
+          : '#fbbf24';
       context.lineWidth = 1 / zoomScale;
       context.stroke();
+      if (isImport && isImporter) {
+        context.beginPath();
+        context.arc(node.x, node.y, radius + 4.5 / zoomScale, 0, Math.PI * 2);
+        context.strokeStyle = '#fbbf24';
+        context.lineWidth = 1 / zoomScale;
+        context.stroke();
+      }
     }
 
     if (globalScale > 1.6 || isHighlighted) {
@@ -207,14 +229,20 @@ export function GraphCanvas() {
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
       context.textBaseline = 'middle';
-      context.fillStyle = 'rgba(226, 232, 240, 0.94)';
+      context.fillStyle = isSelected
+        ? '#f8fafc'
+        : isImport
+          ? '#5eead4'
+          : isImporter
+            ? '#fbbf24'
+            : 'rgba(226, 232, 240, 0.94)';
       context.shadowColor = 'rgba(5, 6, 15, 0.9)';
       context.shadowBlur = 4 / zoomScale;
       context.fillText(fileName, node.x + radius + 6 / zoomScale, node.y);
     }
 
     context.restore();
-  }, [colorById, hoveredId, relatedNodeIds, selectedId]);
+  }, [adjacency, colorById, hoveredId, relatedNodeIds, selectedId]);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
     const direction = edgeDirection(link, selectedId);
@@ -222,7 +250,7 @@ export function GraphCanvas() {
     if (direction === 'incoming') return INCOMING_COLOR;
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
-    return withAlpha(sourceColor, selectedId ? 0.055 : 0.28);
+    return withAlpha(sourceColor, selectedId ? 0.12 : 0.28);
   }, [colorById, selectedId]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => (

@@ -36,6 +36,11 @@ export function GraphLegend({ legend }: GraphLegendProps) {
         )}
       </ul>
       <div className="graph-legend-size">size = lines of code</div>
+      <div className="graph-legend-relations" aria-label="Selected file relationship colors">
+        <span><i className="graph-legend-ring graph-legend-ring--selected" />selected</span>
+        <span><i className="graph-legend-ring graph-legend-ring--imports" />imports</span>
+        <span><i className="graph-legend-ring graph-legend-ring--importers" />importers</span>
+      </div>
     </aside>
   );
 }
