@@ -529,6 +529,76 @@
   display: block;
 }
 
+.graph-legend {
+  position: absolute;
+  z-index: 2;
+  bottom: 12px;
+  left: 12px;
+  max-width: min(270px, calc(100% - 24px));
+  max-height: 40%;
+  overflow: auto;
+  padding: 9px 11px;
+  border: 1px solid rgb(148 163 184 / 15%);
+  border-radius: 9px;
+  color: #b8c4d6;
+  background: rgb(8 10 21 / 82%);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(8px);
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.graph-legend-title {
+  margin-bottom: 5px;
+  color: #dbe4f0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-legend-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.graph-legend-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.graph-legend-item > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-legend-swatch {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 7px currentColor;
+}
+
+.graph-legend-swatch--other {
+  background: #667085;
+}
+
+.graph-legend-size {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgb(148 163 184 / 12%);
+  color: #8190a5;
+  font-size: 9px;
+}
+
 .welcome-state {
   max-width: 340px;
   margin: 24px;

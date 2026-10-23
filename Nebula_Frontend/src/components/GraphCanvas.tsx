@@ -8,15 +8,11 @@ import ForceGraph2D, {
 import { NodeTooltip } from './NodeTooltip';
 import { LoadingOverlay } from './LoadingOverlay';
 import { ErrorState } from './ErrorState';
+import { GraphLegend } from './GraphLegend';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { getNodeRelations, resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
-
-const NODE_PALETTE = [
-  '#8b7cff', '#14b8a6', '#38bdf8', '#f472b6',
-  '#a3e635', '#fbbf24', '#60a5fa', '#fb7185',
-];
-// done
+import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
 type GraphInstance = ForceGraphMethods<
   NodeObject<GraphNode>,
   LinkObject<GraphNode, GraphEdge>
@@ -33,17 +29,6 @@ function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDire
   if (sourceId === selectedId) return 'outgoing';
   if (targetId === selectedId) return 'incoming';
   return 'unrelated';
-}
-
-function folderColor(folder: string): string {
-  const topLevelFolder = folder.split('/')[0] || '(root)';
-  let hash = 2166136261;
-
-  for (const character of topLevelFolder) {
-    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-  }
-
-  return NODE_PALETTE[(hash >>> 0) % NODE_PALETTE.length];
 }
 
 function withAlpha(color: string, alpha: number): string {
@@ -83,12 +68,14 @@ export function GraphCanvas() {
     [graph],
   );
 
-  const colorById = useMemo(
-    () => new Map(
-      graph?.nodes.map((node) => [node.id, folderColor(node.folder)] as const) ?? [],
-    ),
-    [graph],
-  );
+  const allFolders = useMemo(() => graph?.nodes.map((node) => node.folder) ?? [], [graph]);
+  const colorByFolder = useMemo(() => new Map(
+    [...new Set(allFolders)].map((folder) => [folder, folderColor(folder, allFolders)] as const),
+  ), [allFolders]);
+  const colorById = useMemo(() => new Map(
+    graph?.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const) ?? [],
+  ), [colorByFolder, graph]);
+  const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
 
   const relatedNodeIds = useMemo(() => {
     const ids = new Set<string>();
@@ -160,13 +147,14 @@ export function GraphCanvas() {
     if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
 
     const id = String(node.id ?? '');
-    const color = colorById.get(id) ?? NODE_PALETTE[0];
+    const color = colorById.get(id) ?? '#a0aec0';
     const zoomScale = Math.max(globalScale, 0.01);
     const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
-    const radius = Math.max(4, Math.min(14, 2 + Math.sqrt(loc) * 0.45));
+    const radius = nodeRadius(loc);
     const isSelected = id === selectedId;
     const isHovered = id === hoveredId;
     const isRelated = relatedNodeIds.has(id);
+    const isHighlighted = isSelected || isHovered || (selectedId !== null && isRelated);
 
     context.save();
     if (selectedId && !isRelated) context.globalAlpha = 0.17;
@@ -214,7 +202,7 @@ export function GraphCanvas() {
       context.stroke();
     }
 
-    if (globalScale > 1.5) {
+    if (globalScale > 1.6 || isHighlighted) {
       const fileName = node.id?.toString().split('/').pop() ?? '';
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
@@ -232,26 +220,27 @@ export function GraphCanvas() {
     const direction = edgeDirection(link, selectedId);
     if (direction === 'outgoing') return OUTGOING_COLOR;
     if (direction === 'incoming') return INCOMING_COLOR;
-    return selectedId ? 'rgba(148, 163, 184, 0.07)' : 'rgba(148, 163, 184, 0.3)';
-  }, [selectedId]);
+    const { sourceId } = resolveEndpoints(link);
+    const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
+    return withAlpha(sourceColor, selectedId ? 0.055 : 0.28);
+  }, [colorById, selectedId]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => (
     edgeDirection(link, selectedId) === 'unrelated'
-      ? (selectedId ? 0.35 : 0.8)
+      ? (selectedId ? 0.35 : 0.7)
       : 1.8
   ), [selectedId]);
 
   const getLinkParticles = useCallback((link: LinkEndpoints) => {
-    if (!selectedId) return 1;
+    if ((graph?.edges.length ?? 0) > 1500) return 0;
+    if (!selectedId) return 2;
     return edgeDirection(link, selectedId) === 'unrelated' ? 0 : 2;
-  }, [selectedId]);
+  }, [graph?.edges.length, selectedId]);
 
   const getParticleColor = useCallback((link: LinkEndpoints) => {
-    const direction = edgeDirection(link, selectedId);
-    if (direction === 'outgoing') return OUTGOING_COLOR;
-    if (direction === 'incoming') return INCOMING_COLOR;
-    return 'rgba(148, 163, 184, 0.68)';
-  }, [selectedId]);
+    const { sourceId } = resolveEndpoints(link);
+    return withAlpha(colorById.get(sourceId ?? '') ?? '#94a3b8', 0.58);
+  }, [colorById]);
 
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
@@ -298,10 +287,10 @@ export function GraphCanvas() {
           linkWidth={getLinkWidth}
           linkDirectionalArrowLength={4}
           linkDirectionalArrowColor={getLinkColor}
-          linkDirectionalArrowRelPos={0.9}
+          linkDirectionalArrowRelPos={1}
           linkDirectionalParticles={getLinkParticles}
           linkDirectionalParticleSpeed={0.006}
-          linkDirectionalParticleWidth={1.8}
+          linkDirectionalParticleWidth={1.6}
           linkDirectionalParticleColor={getParticleColor}
           onEngineStop={handleEngineStop}
           onNodeHover={handleNodeHover}
@@ -316,6 +305,7 @@ export function GraphCanvas() {
           enablePanInteraction
         />
       )}
+      {phase === 'ready' && graph && <GraphLegend legend={legend} />}
       <NodeTooltip containerRef={containerRef} />
     </main>
   );
