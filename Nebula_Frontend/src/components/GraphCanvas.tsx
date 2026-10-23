@@ -21,6 +21,14 @@ type GraphInstance = ForceGraphMethods<
 >;
 
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
+type LabelBounds = { left: number; top: number; right: number; bottom: number };
+
+function nodeImportance(node: GraphNode): number {
+  const fanIn = Number.isFinite(node.fanIn) ? Math.max(0, node.fanIn) : 0;
+  const fanOut = Number.isFinite(node.fanOut) ? Math.max(0, node.fanOut) : 0;
+  const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
+  return fanIn * 4 + fanOut * 2 + Math.log1p(loc);
+}
 
 function uniqueLinks(edges: readonly GraphEdge[], nodeIds: ReadonlySet<string>): GraphEdge[] {
   const seen = new Set<string>();
@@ -84,12 +92,17 @@ export function GraphCanvas() {
   const graphRef = useRef<GraphInstance | undefined>(undefined);
   const hasFittedGraph = useRef(false);
   const handledFocusRequest = useRef(focusRequest);
+  const labelBounds = useRef<LabelBounds[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
       // ForceGraph mutates nodes and links with simulation coordinates.
-      const nodes = graph?.nodes.map((node) => ({ ...node })) ?? [];
+      const nodes = graph?.nodes
+        .map((node) => ({ ...node }))
+        .sort((left, right) => (
+          nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
+        )) ?? [];
       const nodeIds = new Set(nodes.map((node) => node.id));
       return {
         nodes,
@@ -97,6 +110,10 @@ export function GraphCanvas() {
       };
     },
     [graph],
+  );
+  const labelPriority = useMemo(
+    () => new Map(graphData.nodes.map((node, index) => [node.id, index] as const)),
+    [graphData],
   );
 
   const allFolders = useMemo(() => graph?.nodes.map((node) => node.folder) ?? [], [graph]);
@@ -288,24 +305,57 @@ export function GraphCanvas() {
       }
     }
 
-    const fileName = truncateLabel(node.id?.toString().split('/').pop() ?? '');
-    context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
-    context.textAlign = 'left';
-    context.textBaseline = 'middle';
-    const labelX = node.x + radius + 6 / zoomScale;
-    context.fillStyle = isGraphSelected
-      ? '#f8fafc'
-      : isImport
-        ? '#5eead4'
-        : isImporter
-          ? '#fbbf24'
-          : 'rgba(226, 232, 240, 0.94)';
-    context.shadowColor = 'rgba(5, 6, 15, 0.9)';
-    context.shadowBlur = 4 / zoomScale;
-    context.fillText(fileName, labelX, node.y);
+    const visibleFraction = Math.min(1, Math.max(0.12, 0.12 + ((globalScale - 0.55) / 1.2) * 0.88));
+    const visibleLabelCount = Math.ceil(graphData.nodes.length * visibleFraction);
+    const isImportantAtCurrentZoom = (labelPriority.get(id) ?? Number.MAX_SAFE_INTEGER) < visibleLabelCount;
+    const shouldDrawLabel = isGraphSelected
+      || isImport
+      || isImporter
+      || isHovered
+      || isImportantAtCurrentZoom;
+
+    if (shouldDrawLabel) {
+      const fileName = truncateLabel(node.id?.toString().split('/').pop() ?? '');
+      context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
+      context.textAlign = 'left';
+      context.textBaseline = 'middle';
+      const labelX = node.x + radius + 6 / zoomScale;
+      const labelWidth = context.measureText(fileName).width;
+      const labelHeight = 12 / zoomScale;
+      const bounds = {
+        left: labelX,
+        top: node.y - labelHeight / 2,
+        right: labelX + labelWidth,
+        bottom: node.y + labelHeight / 2,
+      };
+      const overlapsLabel = labelBounds.current.some((existing) => (
+        bounds.left < existing.right
+        && bounds.right > existing.left
+        && bounds.top < existing.bottom
+        && bounds.bottom > existing.top
+      ));
+
+      if (!overlapsLabel) {
+        labelBounds.current.push(bounds);
+        context.fillStyle = isGraphSelected
+          ? '#f8fafc'
+          : isImport
+            ? '#5eead4'
+            : isImporter
+              ? '#fbbf24'
+              : 'rgba(226, 232, 240, 0.94)';
+        context.shadowColor = 'rgba(5, 6, 15, 0.9)';
+        context.shadowBlur = 4 / zoomScale;
+        context.fillText(fileName, labelX, node.y);
+      }
+    }
 
     context.restore();
-  }, [adjacency, colorById, graphSelectedId, hoveredId, relatedNodeIds]);
+  }, [adjacency, colorById, graphData.nodes.length, graphSelectedId, hoveredId, labelPriority, relatedNodeIds]);
+
+  const resetLabelBounds = useCallback(() => {
+    labelBounds.current = [];
+  }, []);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
     const direction = edgeDirection(link, graphSelectedId);
@@ -373,6 +423,7 @@ export function GraphCanvas() {
           height={canvasSize.height}
           graphData={graphData}
           backgroundColor="rgba(0, 0, 0, 0)"
+          onRenderFramePre={resetLabelBounds}
           nodeCanvasObject={drawNode}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
