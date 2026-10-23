@@ -23,6 +23,11 @@ export type GraphWarning = {
   message: string;
 };
 
+export type AnalyzeResponse = {
+  id: string;
+  status: 'ready';
+};
+
 export type GraphData = {
   repo: string;
   sha: string;

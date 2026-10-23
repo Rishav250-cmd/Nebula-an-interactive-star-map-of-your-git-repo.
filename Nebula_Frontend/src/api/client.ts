@@ -1,11 +1,11 @@
-import type { GraphData } from '../types/graph';
+import fallbackGraph from '../data/mock-graph.json';
+import type { AnalyzeResponse, GraphData } from '../types/graph';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5001';
+const REQUEST_TIMEOUT_MS = 120_000;
+const NETWORK_ERROR_MESSAGE = 'Cannot reach the Nebula server. Is the backend running on port 5001?';
 
-export type AnalyzeResponse = {
-  id: string;
-  status: 'ready';
-};
+export type { AnalyzeResponse } from '../types/graph';
 
 export type FileResponse = {
   content: string;
@@ -21,24 +21,58 @@ export type SearchResult = {
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const externalSignal = init?.signal ?? undefined;
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timeoutId = window.setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort();
 
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
+
+  try {
+    let response: Response;
     try {
-      const body = await response.json() as { error?: unknown; message?: unknown };
-      if (typeof body.error === 'string') message = body.error;
-      else if (typeof body.message === 'string') message = body.message;
-    } catch {
-      // Keep the status-based message when the server did not return JSON.
+      response = await fetch(`${API_BASE}${path}`, { ...init, signal: controller.signal });
+    } catch (error: unknown) {
+      if (externalSignal?.aborted) throw error;
+      if (didTimeout) {
+        throw new Error('The request timed out after 120 seconds. Try a smaller repository.');
+      }
+      throw new Error(NETWORK_ERROR_MESSAGE);
     }
-    throw new Error(message);
-  }
 
-  return response.json() as Promise<T>;
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error: unknown) {
+      if (externalSignal?.aborted) throw error;
+      if (didTimeout) {
+        throw new Error('The request timed out after 120 seconds. Try a smaller repository.');
+      }
+      if (response.ok) throw new Error('The Nebula server returned an invalid JSON response.');
+      body = null;
+    }
+
+    if (!response.ok) {
+      const message = typeof body === 'object' && body !== null && 'error' in body
+        && typeof body.error === 'string'
+        ? body.error
+        : `Request failed (${response.status})`;
+      throw new Error(message);
+    }
+
+    return body as T;
+  } finally {
+    if (externalSignal) externalSignal.removeEventListener('abort', abortFromCaller);
+    window.clearTimeout(timeoutId);
+  }
 }
 
-export function analyzeRepository(url: string, signal?: AbortSignal): Promise<AnalyzeResponse> {
+export function analyzeRepo(url: string, signal?: AbortSignal): Promise<AnalyzeResponse> {
   return requestJson<AnalyzeResponse>('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -67,4 +101,12 @@ export function searchRepositoryFiles(
 ): Promise<SearchResult[]> {
   const params = new URLSearchParams({ id, q: query });
   return requestJson<SearchResult[]>(`/api/search?${params.toString()}`, { signal });
+}
+
+export async function fetchMockGraph(): Promise<GraphData> {
+  try {
+    return await requestJson<GraphData>('/api/mock-graph');
+  } catch {
+    return structuredClone(fallbackGraph) as GraphData;
+  }
 }

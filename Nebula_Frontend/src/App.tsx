@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import './App.css';
-import { analyzeRepository, fetchGraph } from './api/client';
+import { analyzeRepo, fetchGraph, fetchMockGraph } from './api/client';
 import { generateMockGraph } from './data/generateMock';
 import { GraphCanvas } from './components/GraphCanvas';
 import { LeftPanel } from './components/LeftPanel';
@@ -18,12 +18,24 @@ export default function App() {
   const controllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('big') === '1') {
+    let isMounted = true;
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('mock') === '1') {
+      fetchMockGraph().then((graph) => {
+        if (!isMounted) return;
+        setGraph(graph);
+        setStatus('ready');
+      });
+    } else if (params.get('big') === '1') {
       setGraph(generateMockGraph());
       setStatus('ready');
     }
 
-    return () => controllerRef.current?.abort();
+    return () => {
+      isMounted = false;
+      controllerRef.current?.abort();
+    };
   }, [setGraph, setStatus]);
 
   const handleAnalyze = useCallback(async () => {
@@ -40,7 +52,7 @@ export default function App() {
     setStatus('loading');
 
     try {
-      const analysis = await analyzeRepository(url, controller.signal);
+      const analysis = await analyzeRepo(url, controller.signal);
       setAnalysisId(analysis.id);
       setProgressMessage('Loading dependency atlas…');
       const graph = await fetchGraph(analysis.id, controller.signal);
