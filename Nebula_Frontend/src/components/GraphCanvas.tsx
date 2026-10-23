@@ -21,6 +21,7 @@ type GraphInstance = ForceGraphMethods<
 >;
 
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
+type LabelBounds = { left: number; top: number; right: number; bottom: number };
 
 function uniqueLinks(edges: readonly GraphEdge[], nodeIds: ReadonlySet<string>): GraphEdge[] {
   const seen = new Set<string>();
@@ -84,6 +85,7 @@ export function GraphCanvas() {
   const graphRef = useRef<GraphInstance | undefined>(undefined);
   const hasFittedGraph = useRef(false);
   const handledFocusRequest = useRef(focusRequest);
+  const labelBounds = useRef<LabelBounds[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
@@ -108,6 +110,16 @@ export function GraphCanvas() {
   ), [colorByFolder, graph]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
+  const topLocNodeIds = useMemo(() => {
+    const nodes = graph?.nodes ?? [];
+    const topQuarterCount = Math.ceil(nodes.length * 0.25);
+    return new Set(
+      [...nodes]
+        .sort((left, right) => (right.loc || 0) - (left.loc || 0))
+        .slice(0, topQuarterCount)
+        .map((node) => node.id),
+    );
+  }, [graph]);
   const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
 
   const relatedNodeIds = useMemo(() => {
@@ -226,9 +238,8 @@ export function GraphCanvas() {
     const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
     const radius = nodeRadius(loc);
     const isGraphSelected = id === graphSelectedId;
-    const isHovered = graphSelectedId === null && id === hoveredId;
+    const isHovered = id === hoveredId;
     const isRelated = relatedNodeIds.has(id);
-    const isHighlighted = isGraphSelected || isHovered || (graphSelectedId !== null && isRelated);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
     const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
 
@@ -289,25 +300,54 @@ export function GraphCanvas() {
       }
     }
 
-    if (globalScale > 1.6 || isHighlighted) {
+    const shouldDrawLabel = isGraphSelected
+      || isImport
+      || isImporter
+      || isHovered
+      || (globalScale > 1.8 && topLocNodeIds.has(id));
+
+    if (shouldDrawLabel) {
       const fileName = truncateLabel(node.id?.toString().split('/').pop() ?? '');
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
       context.textBaseline = 'middle';
-      context.fillStyle = isGraphSelected
-        ? '#f8fafc'
-        : isImport
-          ? '#5eead4'
-          : isImporter
-            ? '#fbbf24'
-            : 'rgba(226, 232, 240, 0.94)';
-      context.shadowColor = 'rgba(5, 6, 15, 0.9)';
-      context.shadowBlur = 4 / zoomScale;
-      context.fillText(fileName, node.x + radius + 6 / zoomScale, node.y);
+      const labelX = node.x + radius + 6 / zoomScale;
+      const labelWidth = context.measureText(fileName).width;
+      const labelHeight = 12 / zoomScale;
+      const bounds = {
+        left: labelX,
+        top: node.y - labelHeight / 2,
+        right: labelX + labelWidth,
+        bottom: node.y + labelHeight / 2,
+      };
+      const overlapsLabel = labelBounds.current.some((existing) => (
+        bounds.left < existing.right
+        && bounds.right > existing.left
+        && bounds.top < existing.bottom
+        && bounds.bottom > existing.top
+      ));
+
+      if (!overlapsLabel) {
+        labelBounds.current.push(bounds);
+        context.fillStyle = isGraphSelected
+          ? '#f8fafc'
+          : isImport
+            ? '#5eead4'
+            : isImporter
+              ? '#fbbf24'
+              : 'rgba(226, 232, 240, 0.94)';
+        context.shadowColor = 'rgba(5, 6, 15, 0.9)';
+        context.shadowBlur = 4 / zoomScale;
+        context.fillText(fileName, labelX, node.y);
+      }
     }
 
     context.restore();
-  }, [adjacency, colorById, graphSelectedId, hoveredId, relatedNodeIds]);
+  }, [adjacency, colorById, graphSelectedId, hoveredId, labelBounds, relatedNodeIds, topLocNodeIds]);
+
+  const resetLabelBounds = useCallback(() => {
+    labelBounds.current = [];
+  }, []);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
     const direction = edgeDirection(link, graphSelectedId);
@@ -375,6 +415,7 @@ export function GraphCanvas() {
           height={canvasSize.height}
           graphData={graphData}
           backgroundColor="rgba(0, 0, 0, 0)"
+          onRenderFramePre={resetLabelBounds}
           nodeCanvasObject={drawNode}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
