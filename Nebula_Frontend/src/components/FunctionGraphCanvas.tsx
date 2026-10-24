@@ -44,6 +44,7 @@ export function FunctionGraphCanvas() {
   const callGraphStatus = useGraphStore((state) => state.callGraphStatus);
   const callGraphError = useGraphStore((state) => state.callGraphError);
   const callGraphDepth = useGraphStore((state) => state.callGraphDepth);
+  const callsVisible = useGraphStore((state) => state.edgeToggles.calls);
   const selectedFunctionId = useGraphStore((state) => state.selectedFunctionId);
   const loadCallGraph = useGraphStore((state) => state.loadCallGraph);
   const setCallGraphDepth = useGraphStore((state) => state.setCallGraphDepth);
@@ -246,10 +247,11 @@ export function FunctionGraphCanvas() {
             linkDirectionalArrowLength={5}
             linkDirectionalArrowRelPos={1}
             linkDirectionalArrowColor={() => 'rgba(203, 213, 225, 0.9)'}
-            linkDirectionalParticles={2}
+            linkDirectionalParticles={callsVisible ? 2 : 0}
             linkDirectionalParticleSpeed={0.008}
             linkDirectionalParticleWidth={2}
             linkDirectionalParticleColor={() => '#c4b5fd'}
+            linkVisibility={() => callsVisible}
             linkColor={() => 'rgba(148, 163, 184, 0.55)'}
             linkWidth={1.1}
             autoPauseRedraw={callGraph.edges.length === 0}

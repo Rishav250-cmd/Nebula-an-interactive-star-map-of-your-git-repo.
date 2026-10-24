@@ -95,7 +95,10 @@ export function GraphCanvas() {
   const analyze = useGraphStore((state) => state.analyze);
   const selectedId = useGraphStore((state) => state.selectedId);
   const selectedCycleIndex = useGraphStore((state) => state.selectedCycleIndex);
+  const importsVisible = useGraphStore((state) => state.edgeToggles.imports);
+  const callsVisible = useGraphStore((state) => state.edgeToggles.calls);
   const cyclesVisible = useGraphStore((state) => state.edgeToggles.cycles);
+  const toggleEdges = useGraphStore((state) => state.toggleEdges);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
   const focusLine = useGraphStore((state) => state.focusLine);
@@ -151,7 +154,12 @@ export function GraphCanvas() {
     [graph, selectedCycleIndex],
   );
   const hasActiveFocus = graphSelectedId !== null || selectedCycleIndex !== null;
-  const hasCycleEdges = useMemo(() => graphData.links.some((link) => link.inCycle === true), [graphData]);
+  const cycleEdgeCount = useMemo(
+    () => graphData.links.reduce((count, link) => count + Number(link.inCycle === true), 0),
+    [graphData],
+  );
+  const hasCycleEdges = cycleEdgeCount > 0;
+  const animateCyclePulse = cycleEdgeCount <= 300;
 
   const isHighlightedLink = useCallback((link: LinkEndpoints) => {
     if (selectedCycleIndex !== null) {
@@ -466,11 +474,13 @@ export function GraphCanvas() {
 
   const resetLabelBounds = useCallback(() => {
     labelBounds.current = [];
-    cyclePulseAlpha.current = 0.35 + 0.35 * Math.sin(performance.now() / 450);
-  }, []);
+    cyclePulseAlpha.current = animateCyclePulse
+      ? 0.35 + 0.35 * Math.sin(performance.now() / 450)
+      : 0.62;
+  }, [animateCyclePulse]);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
-    if (link.inCycle === true) {
+    if (link.inCycle === true && cyclesVisible) {
       return withAlpha(CYCLE_COLOR, hasActiveFocus && !isHighlightedLink(link) ? 0.12 : 0.82);
     }
     const direction = edgeDirection(link, graphSelectedId);
@@ -479,28 +489,27 @@ export function GraphCanvas() {
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
     return withAlpha(sourceColor, hasActiveFocus ? 0.12 : 0.28);
-  }, [colorById, graphSelectedId, hasActiveFocus, isHighlightedLink]);
+  }, [colorById, cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => {
     if (hasActiveFocus && !isHighlightedLink(link)) return 0.35;
-    if (link.inCycle === true) return 1.9;
+    if (link.inCycle === true && cyclesVisible) return 1.9;
     return edgeDirection(link, graphSelectedId) === 'unrelated'
       ? (hasActiveFocus ? 0.35 : 0.7)
       : 1.8;
-  }, [graphSelectedId, hasActiveFocus, isHighlightedLink]);
+  }, [cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
   const getLinkParticles = useCallback((link: LinkEndpoints) => {
-    if (link.inCycle === true && !cyclesVisible) return 0;
     if ((graph?.edges.length ?? 0) > 1500) return 0;
     if (hasActiveFocus && !isHighlightedLink(link)) return 0;
     return 2;
-  }, [cyclesVisible, graph?.edges.length, hasActiveFocus, isHighlightedLink]);
+  }, [graph?.edges.length, hasActiveFocus, isHighlightedLink]);
 
   const getParticleColor = useCallback((link: LinkEndpoints) => {
-    if (link.inCycle === true) return CYCLE_COLOR;
+    if (link.inCycle === true && cyclesVisible) return CYCLE_COLOR;
     const { sourceId } = resolveEndpoints(link);
     return withAlpha(colorById.get(sourceId ?? '') ?? '#94a3b8', 0.58);
-  }, [colorById]);
+  }, [colorById, cyclesVisible]);
 
   const drawCycleLink = useCallback((
     link: LinkObject<GraphNode, GraphEdge>,
@@ -528,8 +537,8 @@ export function GraphCanvas() {
   }, [cyclesVisible, hasActiveFocus, isHighlightedLink]);
 
   const isLinkVisible = useCallback((link: LinkEndpoints) => (
-    link.inCycle !== true || cyclesVisible
-  ), [cyclesVisible]);
+    (link.inCycle === true && cyclesVisible) || importsVisible
+  ), [cyclesVisible, importsVisible]);
 
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
@@ -569,6 +578,37 @@ export function GraphCanvas() {
           Function graph
         </button>
       </div>
+      {phase === 'ready' && graph && (
+      <div className="edge-toggle-toolbar" role="group" aria-label="Edge visibility">
+        <button
+          type="button"
+          aria-pressed={importsVisible}
+          disabled={viewMode !== 'file'}
+          title={viewMode === 'file' ? 'Toggle import edges' : 'Imports applies to the file graph.'}
+          onClick={() => toggleEdges('imports')}
+        >
+          Imports
+        </button>
+        <button
+          type="button"
+          aria-pressed={callsVisible}
+          disabled={viewMode !== 'function'}
+          title={viewMode === 'function' ? 'Toggle function call edges' : 'Calls applies to the function graph.'}
+          onClick={() => toggleEdges('calls')}
+        >
+          Calls
+        </button>
+        <button
+          type="button"
+          aria-pressed={cyclesVisible}
+          disabled={viewMode !== 'file'}
+          title={viewMode === 'file' ? 'Toggle circular import edges' : 'Cycles applies to the file graph.'}
+          onClick={() => toggleEdges('cycles')}
+        >
+          Cycles
+        </button>
+      </div>
+      )}
       {phase === 'idle' && !graph && (
         <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
@@ -598,7 +638,9 @@ export function GraphCanvas() {
           linkCanvasObjectMode="after"
           linkCanvasObject={drawCycleLink}
           linkVisibility={isLinkVisible}
-          autoPauseRedraw={(hasCycleEdges && cyclesVisible) || symbolPulse !== null ? false : undefined}
+          autoPauseRedraw={(
+            (hasCycleEdges && cyclesVisible && animateCyclePulse) || symbolPulse !== null
+          ) ? false : undefined}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
           linkDirectionalArrowLength={4}
