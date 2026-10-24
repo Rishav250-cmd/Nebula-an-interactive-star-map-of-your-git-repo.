@@ -213,6 +213,10 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
         set({ selectedCycleIndex: null });
         return;
       }
+      if (get().selectedCycleIndex === selectedCycleIndex) {
+        get().clearFocus();
+        return;
+      }
       set({
         selectedCycleIndex,
         selectedId: null,

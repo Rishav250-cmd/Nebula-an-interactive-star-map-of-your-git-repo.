@@ -97,7 +97,7 @@ export function GraphCanvas() {
   const cyclesVisible = useGraphStore((state) => state.edgeToggles.cycles);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
-  const selectNode = useGraphStore((state) => state.selectNode);
+  const clearFocus = useGraphStore((state) => state.clearFocus);
   const focusNode = useGraphStore((state) => state.focusNode);
   const hoverNode = useGraphStore((state) => state.hoverNode);
 
@@ -170,13 +170,13 @@ export function GraphCanvas() {
   }, [adjacency, graphSelectedId]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId && selectedCycleIndex === null) return;
     const clearSelectionOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') selectNode(null);
+      if (event.key === 'Escape') clearFocus();
     };
     window.addEventListener('keydown', clearSelectionOnEscape);
     return () => window.removeEventListener('keydown', clearSelectionOnEscape);
-  }, [selectedId, selectNode]);
+  }, [clearFocus, selectedCycleIndex, selectedId]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -261,6 +261,53 @@ export function GraphCanvas() {
     frameId = requestAnimationFrame(focusSelectedNode);
     return () => cancelAnimationFrame(frameId);
   }, [focusRequest, graphData.nodes, selectedId]);
+
+  useEffect(() => {
+    if (selectedCycleIndex === null) return;
+    const cycle = graph?.cycles[selectedCycleIndex];
+    if (!cycle?.length) return;
+    const cycleNodeIds = new Set(cycle);
+    const startedAt = performance.now();
+    let previousPositions: number[] | null = null;
+    let stableFrames = 0;
+    let frameId = 0;
+
+    const fitCycleWhenStable = () => {
+      const nodes = graphData.nodes.filter((node) => cycleNodeIds.has(node.id));
+      const positions = nodes.flatMap((node) => (
+        typeof node.x === 'number' && Number.isFinite(node.x)
+        && typeof node.y === 'number' && Number.isFinite(node.y)
+          ? [node.x, node.y]
+          : []
+      ));
+      const elapsed = performance.now() - startedAt;
+
+      if (nodes.length === cycleNodeIds.size && positions.length === cycleNodeIds.size * 2) {
+        if (previousPositions && positions.every((position, index) => (
+          Math.abs(position - previousPositions![index]) < 0.15
+        ))) {
+          stableFrames += 1;
+        } else {
+          stableFrames = 0;
+        }
+        previousPositions = positions;
+
+        if ((stableFrames >= 5 && elapsed >= 300) || elapsed >= 4_000) {
+          graphRef.current?.zoomToFit(
+            700,
+            80,
+            (node) => node.id !== undefined && cycleNodeIds.has(String(node.id)),
+          );
+          return;
+        }
+      }
+
+      if (elapsed < 4_500) frameId = requestAnimationFrame(fitCycleWhenStable);
+    };
+
+    frameId = requestAnimationFrame(fitCycleWhenStable);
+    return () => cancelAnimationFrame(frameId);
+  }, [graph, graphData.nodes.length, selectedCycleIndex]);
 
   const drawNode = useCallback((
     node: NodeObject<GraphNode>,
@@ -401,7 +448,7 @@ export function GraphCanvas() {
     if (direction === 'incoming') return INCOMING_COLOR;
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
-    return withAlpha(sourceColor, graphSelectedId ? 0.12 : 0.28);
+    return withAlpha(sourceColor, hasActiveFocus ? 0.12 : 0.28);
   }, [colorById, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => {
@@ -513,9 +560,9 @@ export function GraphCanvas() {
           onNodeHover={handleNodeHover}
           onNodeClick={(node) => {
             if (node.id != null) focusNode(String(node.id));
-            else selectNode(null);
+            else clearFocus();
           }}
-          onBackgroundClick={() => selectNode(null)}
+          onBackgroundClick={clearFocus}
           showPointerCursor={(object) => Boolean(object && 'id' in object)}
           enableNodeDrag
           enableZoomInteraction
