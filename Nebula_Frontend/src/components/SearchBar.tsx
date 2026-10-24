@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { searchRepositoryFiles, type SearchResult } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
@@ -40,6 +40,7 @@ export function SearchBar() {
   const callGraphStatus = useGraphStore((state) => state.callGraphStatus);
   const selectFunction = useGraphStore((state) => state.selectFunction);
   const listboxId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -178,6 +179,28 @@ export function SearchBar() {
   };
 
   const canSearch = Boolean(analysisId && status === 'ready');
+
+  // Keyboard shortcut: pressing "/" anywhere jumps to the search box (like GitHub).
+  useEffect(() => {
+    if (!canSearch) return undefined;
+
+    const focusSearchOnSlash = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+
+      const target = event.target;
+      const isTyping = target instanceof HTMLElement
+        && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+      if (isTyping) return;
+
+      event.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+
+    window.addEventListener('keydown', focusSearchOnSlash);
+    return () => window.removeEventListener('keydown', focusSearchOnSlash);
+  }, [canSearch]);
+
   const showDropdown = isOpen && Boolean(query.trim());
 
   return (
@@ -185,6 +208,8 @@ export function SearchBar() {
       <label className="panel-section-title" htmlFor="file-search">Search files</label>
       <input
         id="file-search"
+        ref={inputRef}
+        aria-keyshortcuts="/"
         className="search-input"
         type="search"
         placeholder={canSearch ? 'Type a file name…' : 'Analyze a repo to search'}
