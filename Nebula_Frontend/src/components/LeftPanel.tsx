@@ -3,6 +3,7 @@ import { buildAdjacency } from '../lib/graphHighlight';
 import { useGraphStore } from '../store/useGraphStore';
 import { ImportList } from './ImportList';
 import { SearchBar } from './SearchBar';
+import { CyclesPanel } from './CyclesPanel';
 
 export function LeftPanel() {
   const graph = useGraphStore((state) => state.graph);
@@ -40,6 +41,7 @@ export function LeftPanel() {
           emptyMessage={selectedNode ? 'No files import this file.' : 'Select a file to inspect its importers.'}
         />
       </section>
+      <CyclesPanel />
     </aside>
   );
 }

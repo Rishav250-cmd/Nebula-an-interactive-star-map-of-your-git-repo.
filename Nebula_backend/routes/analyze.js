@@ -3,11 +3,24 @@ import multer from "multer";
 import { rm } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
 import { extractZipArchive, ZipArchiveError } from "../services/archive.js";
-import { buildTree, cloneRepo, listFiles } from "../services/ingest.js";
-import { cacheAnalysisGraph, getAnalysis, storeAnalysis } from "../services/store.js";
+import {
+  buildTree,
+  cloneLocationForUrl,
+  cloneRepo,
+  listFiles,
+} from "../services/ingest.js";
+import { buildCallGraph } from "../services/callgraph.js";
+import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
+import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
+import {
+  cacheAnalysisGraph,
+  getAnalysis,
+  storeAnalysis,
+} from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
-const githubRepositoryUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
+const githubRepositoryUrl =
+  /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
 const uploadZip = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 0 },
@@ -15,6 +28,12 @@ const uploadZip = multer({
 
 export function createAnalyzeRouter({
   cloneRepoImpl = cloneRepo,
+  cloneLocationForUrlImpl = cloneLocationForUrl,
+  getRemoteShaImpl = getRemoteHeadSha,
+  getHeadShaImpl = getHeadSha,
+  loadAnalysisCacheImpl = loadAnalysisCache,
+  saveAnalysisCacheImpl = saveAnalysisCache,
+  parseFileImpl,
   listFilesImpl = listFiles,
   buildGraphImpl = buildGraph,
   getAnalysisImpl = getAnalysis,
@@ -25,7 +44,8 @@ export function createAnalyzeRouter({
 
   router.post("/analyze", async (request, response) => {
     const { url } = request.body ?? {};
-    if (!isValidRepositoryUrl(url)) return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url))
+      return response.status(400).json({ error: "Invalid GitHub URL" });
 
     try {
       const repository = await cloneAndBuild(url);
@@ -38,12 +58,15 @@ export function createAnalyzeRouter({
 
   router.post("/graph", async (request, response) => {
     const { url } = request.body ?? {};
-    if (!isValidRepositoryUrl(url)) return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url))
+      return response.status(400).json({ error: "Invalid GitHub URL" });
 
     try {
       const repository = await cloneAndBuild(url);
       storeAnalysisImpl(repository);
-      return response.status(200).json({ ...repository.graph, id: repository.id });
+      return response
+        .status(200)
+        .json({ ...repository.graph, id: repository.id });
     } catch (error) {
       return sendPipelineError(response, error);
     }
@@ -51,12 +74,16 @@ export function createAnalyzeRouter({
 
   router.post("/upload", runZipUpload, async (request, response) => {
     if (!request.file) {
-      return response.status(400).json({ error: "A ZIP file is required in the 'file' field." });
+      return response
+        .status(400)
+        .json({ error: "A ZIP file is required in the 'file' field." });
     }
 
     const fileName = request.file.originalname.split(/[\\/]/).at(-1) || "";
     if (!fileName.toLowerCase().endsWith(".zip")) {
-      return response.status(400).json({ error: "Only .zip files are accepted." });
+      return response
+        .status(400)
+        .json({ error: "Only .zip files are accepted." });
     }
 
     let extracted;
@@ -64,7 +91,12 @@ export function createAnalyzeRouter({
       extracted = await extractZipArchive(request.file.buffer);
       const files = await listFilesImpl(extracted.dir);
       const tree = buildTree(files);
-      storeAnalysisImpl({ id: extracted.id, dir: extracted.dir, url: fileName, graph: null });
+      storeAnalysisImpl({
+        id: extracted.id,
+        dir: extracted.dir,
+        url: fileName,
+        graph: null,
+      });
       return response.status(200).json({
         id: extracted.id,
         status: "done",
@@ -73,32 +105,103 @@ export function createAnalyzeRouter({
         tree,
       });
     } catch (error) {
-      if (extracted?.dir) await rm(extracted.dir, { recursive: true, force: true });
+      if (extracted?.dir)
+        await rm(extracted.dir, { recursive: true, force: true });
       if (error instanceof ZipArchiveError) {
         return response.status(error.statusCode).json({ error: error.message });
       }
-      console.error("Repository upload failed:", error?.message ?? String(error));
-      return response.status(500).json({ error: "Could not process uploaded repository." });
+      console.error(
+        "Repository upload failed:",
+        error?.message ?? String(error),
+      );
+      return response
+        .status(500)
+        .json({ error: "Could not process uploaded repository." });
     }
   });
 
   router.get("/graph/:id", async (request, response) => {
     const analysis = getAnalysisImpl(request.params.id);
-    if (!analysis) return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis)
+      return response.status(404).json({ error: "Unknown repository id" });
 
-    if (!analysis.graph) {
-      try {
-        analysis.graph = await buildGraphForRepository(analysis);
-        cacheAnalysisGraphImpl(analysis.id, analysis.graph);
-      } catch (error) {
-        return sendPipelineError(response, error);
-      }
+    try {
+      await ensureGraphAnalysis(analysis);
+    } catch (error) {
+      return sendPipelineError(response, error);
     }
 
     return response.status(200).json(analysis.graph);
   });
 
+  router.get("/callgraph", async (request, response) => {
+    const { id, path: filePath, depth: rawDepth } = request.query;
+    if (typeof id !== "string" || id === "")
+      return response
+        .status(400)
+        .json({ error: "The 'id' query parameter is required" });
+    if (typeof filePath !== "string" || filePath === "")
+      return response
+        .status(400)
+        .json({ error: "The 'path' query parameter is required" });
+    if (rawDepth !== undefined && rawDepth !== "1" && rawDepth !== "2")
+      return response.status(400).json({ error: "Depth must be 1 or 2" });
+
+    const analysis = getAnalysisImpl(id);
+    if (!analysis)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    try {
+      await ensureGraphAnalysis(analysis);
+      if (!Object.hasOwn(analysis.analysis?.files ?? {}, filePath))
+        return response
+          .status(404)
+          .json({ error: "Path is not an analyzed code file" });
+
+      const callGraph = buildCallGraph(
+        analysis.analysis,
+        analysis.graph,
+        filePath,
+        {
+          depth: rawDepth === "2" ? 2 : 1,
+        },
+      );
+      return response.status(200).json(callGraph);
+    } catch (error) {
+      return sendPipelineError(response, error);
+    }
+  });
+
   async function cloneAndBuild(url) {
+    let remoteSha = null;
+    try {
+      remoteSha = await getRemoteShaImpl(url);
+    } catch (error) {
+      console.warn(
+        "Could not check remote repository SHA:",
+        error?.message ?? String(error),
+      );
+    }
+
+    const remoteCache = remoteSha ? await loadCache(url, remoteSha) : null;
+    if (remoteCache) {
+      const previousClone = cloneLocationForUrlImpl(url);
+      try {
+        const previousSha = await getHeadShaImpl(previousClone.dir);
+        if (previousSha === remoteSha) {
+          return {
+            id: previousClone.id,
+            dir: previousClone.dir,
+            url,
+            graph: remoteCache.graph,
+            analysis: remoteCache.analysis,
+          };
+        }
+      } catch {
+        // A missing or stale checkout simply means the request must clone.
+      }
+    }
+
     let clonedRepository;
     try {
       clonedRepository = await cloneRepoImpl(url);
@@ -111,23 +214,87 @@ export function createAnalyzeRouter({
       dir: clonedRepository.dir,
       url,
       graph: null,
+      analysis: null,
     };
-    repository.graph = await buildGraphForRepository(repository);
+
+    let clonedSha = clonedRepository.sha ?? null;
+    if (!clonedSha) {
+      try {
+        clonedSha = await getHeadShaImpl(clonedRepository.dir);
+      } catch {
+        // The graph builder may still provide a snapshot SHA for test doubles.
+      }
+    }
+
+    const cloneCache =
+      clonedSha === remoteSha
+        ? remoteCache
+        : clonedSha
+          ? await loadCache(url, clonedSha)
+          : null;
+    if (cloneCache) {
+      repository.graph = cloneCache.graph;
+      repository.analysis = cloneCache.analysis;
+      return repository;
+    }
+
+    const built = await buildGraphForRepository(repository);
+    repository.graph = built.graph;
+    repository.analysis = built.analysis;
+    const builtSha = clonedSha ?? built.graph?.sha;
+    if (builtSha) {
+      try {
+        await saveAnalysisCacheImpl({
+          repo: url,
+          sha: builtSha,
+          graph: built.graph,
+          analysis: built.analysis,
+        });
+      } catch (error) {
+        console.error(
+          "Analysis cache write failed:",
+          error?.message ?? String(error),
+        );
+      }
+    }
     return repository;
+  }
+
+  async function loadCache(url, sha) {
+    try {
+      return await loadAnalysisCacheImpl(url, sha);
+    } catch (error) {
+      console.error(
+        "Analysis cache read failed:",
+        error?.message ?? String(error),
+      );
+      return null;
+    }
   }
 
   async function buildGraphForRepository(repository) {
     try {
       const files = await listFilesImpl(repository.dir);
-      return await buildGraphImpl({
+      const buildOptions = {
         id: repository.id,
         dir: repository.dir,
         files,
         repoUrl: repository.url,
-      });
+      };
+      if (parseFileImpl) buildOptions.parseFileImpl = parseFileImpl;
+      return await buildGraphImpl(buildOptions);
     } catch (error) {
       throw new RepositoryPipelineError("build", error);
     }
+  }
+
+  async function ensureGraphAnalysis(analysis) {
+    if (analysis.graph && analysis.analysis) return;
+
+    const built = await buildGraphForRepository(analysis);
+    analysis.graph = built.graph;
+    analysis.analysis = built.analysis;
+    cacheAnalysisGraphImpl(analysis.id, built.graph, built.analysis);
   }
 
   return router;
@@ -136,10 +303,17 @@ export function createAnalyzeRouter({
 function runZipUpload(request, response, next) {
   uploadZip.single("file")(request, response, (error) => {
     if (!error) return next();
-    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-      return response.status(413).json({ error: "ZIP upload exceeds the 50 MB limit." });
+    if (
+      error instanceof multer.MulterError &&
+      error.code === "LIMIT_FILE_SIZE"
+    ) {
+      return response
+        .status(413)
+        .json({ error: "ZIP upload exceeds the 50 MB limit." });
     }
-    return response.status(400).json({ error: "Upload exactly one file in the 'file' field." });
+    return response
+      .status(400)
+      .json({ error: "Upload exactly one file in the 'file' field." });
   });
 }
 
@@ -149,15 +323,23 @@ function isValidRepositoryUrl(url) {
 
 function sendPipelineError(response, error) {
   const cause = error instanceof RepositoryPipelineError ? error.cause : error;
-  if (cause instanceof GraphError) return response.status(cause.statusCode).json({ error: cause.message });
+  if (cause instanceof GraphError)
+    return response.status(cause.statusCode).json({ error: cause.message });
 
   if (error instanceof RepositoryPipelineError && error.stage === "clone") {
     console.error("Repository clone failed:", cause?.message ?? String(cause));
-    return response.status(500).json({ error: "Could not clone repo (private or not found?)" });
+    return response
+      .status(500)
+      .json({ error: "Could not clone repo (private or not found?)" });
   }
 
-  console.error("Repository graph build failed:", cause?.message ?? String(cause));
-  return response.status(500).json({ error: "Could not build repository graph." });
+  console.error(
+    "Repository graph build failed:",
+    cause?.message ?? String(cause),
+  );
+  return response
+    .status(500)
+    .json({ error: "Could not build repository graph." });
 }
 
 class RepositoryPipelineError extends Error {

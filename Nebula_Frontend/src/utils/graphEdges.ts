@@ -2,6 +2,7 @@ export type LinkEndpoints = {
   source?: unknown;
   target?: unknown;
   type?: unknown;
+  inCycle?: unknown;
 };
 
 export type ResolvedEndpoints = {

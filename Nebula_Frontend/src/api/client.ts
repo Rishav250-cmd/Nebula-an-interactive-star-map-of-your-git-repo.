@@ -1,23 +1,25 @@
 import fallbackGraph from '../data/mock-graph.json';
-import type { AnalyzeResponse, GraphData } from '../types/graph';
+import type { AnalyzeResponse, CallGraph, GraphData, SearchResult } from '../types/graph';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5001';
 const REQUEST_TIMEOUT_MS = 120_000;
 const NETWORK_ERROR_MESSAGE = 'Cannot reach the Nebula server. Is the backend running on port 5001?';
 
-export type { AnalyzeResponse } from '../types/graph';
+export type { AnalyzeResponse, SearchResult } from '../types/graph';
+
+const callGraphCache = new Map<string, CallGraph>();
 
 export type FileResponse = {
   content: string;
   language: string;
   loc: number;
-};
-
-export type SearchResult = {
-  type: 'file' | 'symbol';
-  name: string;
-  path: string;
-  line: number;
+  functions?: Array<{
+    name: string;
+    kind: 'function' | 'method' | 'class';
+    line: number;
+    endLine: number;
+    complexity: number;
+  }>;
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -83,6 +85,28 @@ export function analyzeRepo(url: string, signal?: AbortSignal): Promise<AnalyzeR
 
 export function fetchGraph(id: string, signal?: AbortSignal): Promise<GraphData> {
   return requestJson<GraphData>(`/api/graph/${encodeURIComponent(id)}`, { signal });
+}
+
+export function fetchCallGraph(
+  repoId: string,
+  path: string,
+  depth: 1 | 2,
+  signal?: AbortSignal,
+): Promise<CallGraph> {
+  const cacheKey = `${repoId}|${path}|${depth}`;
+  const cached = callGraphCache.get(cacheKey);
+  if (cached) return Promise.resolve(cached);
+
+  const params = new URLSearchParams({ id: repoId, path, depth: String(depth) });
+  return requestJson<CallGraph>(`/api/callgraph?${params.toString()}`, { signal })
+    .then((callGraph) => {
+      callGraphCache.set(cacheKey, callGraph);
+      return callGraph;
+    });
+}
+
+export function clearCallGraphCache(): void {
+  callGraphCache.clear();
 }
 
 export function fetchRepositoryFile(

@@ -10,6 +10,7 @@ import { NodeTooltip } from './NodeTooltip';
 import { LoadingOverlay } from './LoadingOverlay';
 import { ErrorState } from './ErrorState';
 import { GraphLegend } from './GraphLegend';
+import { FunctionGraphCanvas } from './FunctionGraphCanvas';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
@@ -57,6 +58,17 @@ function truncateLabel(label: string, maxLength = 32): string {
 
 const OUTGOING_COLOR = 'rgba(94, 234, 212, 0.96)';
 const INCOMING_COLOR = 'rgba(251, 191, 36, 0.96)';
+const CYCLE_COLOR = '#F87171';
+
+function endpointPosition(endpoint: unknown): { x: number; y: number } | null {
+  if (typeof endpoint !== 'object' || endpoint === null || !('x' in endpoint) || !('y' in endpoint)) {
+    return null;
+  }
+  const { x, y } = endpoint as { x?: unknown; y?: unknown };
+  return typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)
+    ? { x, y }
+    : null;
+}
 
 function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDirection {
   if (!selectedId) return 'unrelated';
@@ -82,18 +94,29 @@ export function GraphCanvas() {
   const lastUrl = useGraphStore((state) => state.lastUrl);
   const analyze = useGraphStore((state) => state.analyze);
   const selectedId = useGraphStore((state) => state.selectedId);
+  const selectedCycleIndex = useGraphStore((state) => state.selectedCycleIndex);
+  const importsVisible = useGraphStore((state) => state.edgeToggles.imports);
+  const callsVisible = useGraphStore((state) => state.edgeToggles.calls);
+  const cyclesVisible = useGraphStore((state) => state.edgeToggles.cycles);
+  const toggleEdges = useGraphStore((state) => state.toggleEdges);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
-  const selectNode = useGraphStore((state) => state.selectNode);
+  const focusLine = useGraphStore((state) => state.focusLine);
+  const clearFocus = useGraphStore((state) => state.clearFocus);
   const focusNode = useGraphStore((state) => state.focusNode);
   const hoverNode = useGraphStore((state) => state.hoverNode);
+  const viewMode = useGraphStore((state) => state.viewMode);
+  const setViewMode = useGraphStore((state) => state.setViewMode);
 
   const containerRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<GraphInstance | undefined>(undefined);
   const hasFittedGraph = useRef(false);
   const handledFocusRequest = useRef(focusRequest);
   const labelBounds = useRef<LabelBounds[]>([]);
+  const cyclePulseAlpha = useRef(0.35);
+  const handledSymbolFocusRequest = useRef(focusRequest);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
@@ -126,6 +149,29 @@ export function GraphCanvas() {
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
+  const selectedCycleNodeIds = useMemo(
+    () => new Set(selectedCycleIndex === null ? [] : graph?.cycles[selectedCycleIndex] ?? []),
+    [graph, selectedCycleIndex],
+  );
+  const hasActiveFocus = graphSelectedId !== null || selectedCycleIndex !== null;
+  const cycleEdgeCount = useMemo(
+    () => graphData.links.reduce((count, link) => count + Number(link.inCycle === true), 0),
+    [graphData],
+  );
+  const hasCycleEdges = cycleEdgeCount > 0;
+  const animateCyclePulse = cycleEdgeCount <= 300;
+
+  const isHighlightedLink = useCallback((link: LinkEndpoints) => {
+    if (selectedCycleIndex !== null) {
+      const { sourceId, targetId } = resolveEndpoints(link);
+      return link.inCycle === true
+        && sourceId !== null
+        && targetId !== null
+        && selectedCycleNodeIds.has(sourceId)
+        && selectedCycleNodeIds.has(targetId);
+    }
+    return edgeDirection(link, graphSelectedId) !== 'unrelated';
+  }, [graphSelectedId, selectedCycleIndex, selectedCycleNodeIds]);
 
   const relatedNodeIds = useMemo(() => {
     const ids = new Set<string>();
@@ -138,13 +184,23 @@ export function GraphCanvas() {
   }, [adjacency, graphSelectedId]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId && selectedCycleIndex === null) return;
     const clearSelectionOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') selectNode(null);
+      if (event.key === 'Escape') clearFocus();
     };
     window.addEventListener('keydown', clearSelectionOnEscape);
     return () => window.removeEventListener('keydown', clearSelectionOnEscape);
-  }, [selectedId, selectNode]);
+  }, [clearFocus, selectedCycleIndex, selectedId]);
+
+  useEffect(() => {
+    if (focusRequest === handledSymbolFocusRequest.current) return;
+    handledSymbolFocusRequest.current = focusRequest;
+    if (viewMode !== 'file' || !selectedId || focusLine === null) return;
+
+    setSymbolPulse({ id: selectedId, startedAt: performance.now() });
+    const timeoutId = window.setTimeout(() => setSymbolPulse(null), 1_500);
+    return () => window.clearTimeout(timeoutId);
+  }, [focusLine, focusRequest, selectedId, viewMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -230,6 +286,53 @@ export function GraphCanvas() {
     return () => cancelAnimationFrame(frameId);
   }, [focusRequest, graphData.nodes, selectedId]);
 
+  useEffect(() => {
+    if (selectedCycleIndex === null) return;
+    const cycle = graph?.cycles[selectedCycleIndex];
+    if (!cycle?.length) return;
+    const cycleNodeIds = new Set(cycle);
+    const startedAt = performance.now();
+    let previousPositions: number[] | null = null;
+    let stableFrames = 0;
+    let frameId = 0;
+
+    const fitCycleWhenStable = () => {
+      const nodes = graphData.nodes.filter((node) => cycleNodeIds.has(node.id));
+      const positions = nodes.flatMap((node) => (
+        typeof node.x === 'number' && Number.isFinite(node.x)
+        && typeof node.y === 'number' && Number.isFinite(node.y)
+          ? [node.x, node.y]
+          : []
+      ));
+      const elapsed = performance.now() - startedAt;
+
+      if (nodes.length === cycleNodeIds.size && positions.length === cycleNodeIds.size * 2) {
+        if (previousPositions && positions.every((position, index) => (
+          Math.abs(position - previousPositions![index]) < 0.15
+        ))) {
+          stableFrames += 1;
+        } else {
+          stableFrames = 0;
+        }
+        previousPositions = positions;
+
+        if ((stableFrames >= 5 && elapsed >= 300) || elapsed >= 4_000) {
+          graphRef.current?.zoomToFit(
+            700,
+            80,
+            (node) => node.id !== undefined && cycleNodeIds.has(String(node.id)),
+          );
+          return;
+        }
+      }
+
+      if (elapsed < 4_500) frameId = requestAnimationFrame(fitCycleWhenStable);
+    };
+
+    frameId = requestAnimationFrame(fitCycleWhenStable);
+    return () => cancelAnimationFrame(frameId);
+  }, [graph, graphData.nodes.length, selectedCycleIndex]);
+
   const drawNode = useCallback((
     node: NodeObject<GraphNode>,
     context: CanvasRenderingContext2D,
@@ -244,12 +347,15 @@ export function GraphCanvas() {
     const radius = nodeRadius(loc);
     const isGraphSelected = id === graphSelectedId;
     const isHovered = id === hoveredId;
+    const isSymbolPulse = symbolPulse?.id === id;
     const isRelated = relatedNodeIds.has(id);
+    const isInSelectedCycle = selectedCycleNodeIds.has(id);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
     const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
 
     context.save();
-    if (graphSelectedId && !isRelated) context.globalAlpha = 0.12;
+    const isHighlighted = selectedCycleIndex !== null ? isInSelectedCycle : isRelated;
+    if (hasActiveFocus && !isHighlighted) context.globalAlpha = 0.12;
     const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.62);
     glow.addColorStop(0, withAlpha(color, 0.57));
     glow.addColorStop(0.38, withAlpha(color, 0.18));
@@ -267,13 +373,26 @@ export function GraphCanvas() {
     context.fill();
     context.shadowBlur = 0;
 
-    if (node.inCycle) {
+    if (node.inCycle && cyclesVisible) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
-      context.strokeStyle = '#fb5266';
-      context.lineWidth = 1.8 / zoomScale;
-      context.shadowColor = '#f43f5e';
-      context.shadowBlur = 7.2 / zoomScale;
+      context.strokeStyle = withAlpha(CYCLE_COLOR, cyclePulseAlpha.current);
+      context.lineWidth = 2 / zoomScale;
+      context.shadowColor = CYCLE_COLOR;
+      context.shadowBlur = 8 / zoomScale;
+      context.stroke();
+      context.shadowBlur = 0;
+    }
+
+    if (isSymbolPulse && symbolPulse) {
+      const elapsed = performance.now() - symbolPulse.startedAt;
+      const wave = 0.5 + 0.5 * Math.sin(elapsed / 95);
+      context.beginPath();
+      context.arc(node.x, node.y, radius + (8 + wave * 5) / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = withAlpha('#e9d5ff', 0.35 + wave * 0.6);
+      context.lineWidth = (1.6 + wave * 1.3) / zoomScale;
+      context.shadowColor = '#c4b5fd';
+      context.shadowBlur = (8 + wave * 8) / zoomScale;
       context.stroke();
       context.shadowBlur = 0;
     }
@@ -351,37 +470,75 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, colorById, graphData.nodes.length, graphSelectedId, hoveredId, labelPriority, relatedNodeIds]);
+  }, [adjacency, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse]);
 
   const resetLabelBounds = useCallback(() => {
     labelBounds.current = [];
-  }, []);
+    cyclePulseAlpha.current = animateCyclePulse
+      ? 0.35 + 0.35 * Math.sin(performance.now() / 450)
+      : 0.62;
+  }, [animateCyclePulse]);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
+    if (link.inCycle === true && cyclesVisible) {
+      return withAlpha(CYCLE_COLOR, hasActiveFocus && !isHighlightedLink(link) ? 0.12 : 0.82);
+    }
     const direction = edgeDirection(link, graphSelectedId);
     if (direction === 'outgoing') return OUTGOING_COLOR;
     if (direction === 'incoming') return INCOMING_COLOR;
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
-    return withAlpha(sourceColor, graphSelectedId ? 0.12 : 0.28);
-  }, [colorById, graphSelectedId]);
+    return withAlpha(sourceColor, hasActiveFocus ? 0.12 : 0.28);
+  }, [colorById, cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
-  const getLinkWidth = useCallback((link: LinkEndpoints) => (
-    edgeDirection(link, graphSelectedId) === 'unrelated'
-      ? (graphSelectedId ? 0.35 : 0.7)
-      : 1.8
-  ), [graphSelectedId]);
+  const getLinkWidth = useCallback((link: LinkEndpoints) => {
+    if (hasActiveFocus && !isHighlightedLink(link)) return 0.35;
+    if (link.inCycle === true && cyclesVisible) return 1.9;
+    return edgeDirection(link, graphSelectedId) === 'unrelated'
+      ? (hasActiveFocus ? 0.35 : 0.7)
+      : 1.8;
+  }, [cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
   const getLinkParticles = useCallback((link: LinkEndpoints) => {
     if ((graph?.edges.length ?? 0) > 1500) return 0;
-    if (!graphSelectedId) return 2;
-    return edgeDirection(link, graphSelectedId) === 'unrelated' ? 0 : 2;
-  }, [graph?.edges.length, graphSelectedId]);
+    if (hasActiveFocus && !isHighlightedLink(link)) return 0;
+    return 2;
+  }, [graph?.edges.length, hasActiveFocus, isHighlightedLink]);
 
   const getParticleColor = useCallback((link: LinkEndpoints) => {
+    if (link.inCycle === true && cyclesVisible) return CYCLE_COLOR;
     const { sourceId } = resolveEndpoints(link);
     return withAlpha(colorById.get(sourceId ?? '') ?? '#94a3b8', 0.58);
-  }, [colorById]);
+  }, [colorById, cyclesVisible]);
+
+  const drawCycleLink = useCallback((
+    link: LinkObject<GraphNode, GraphEdge>,
+    context: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => {
+    if (link.inCycle !== true || !cyclesVisible) return;
+    const source = endpointPosition(link.source);
+    const target = endpointPosition(link.target);
+    if (!source || !target) return;
+
+    const dimmed = hasActiveFocus && !isHighlightedLink(link);
+    const alpha = cyclePulseAlpha.current * (dimmed ? 0.12 : 1);
+    const scale = Math.max(globalScale, 0.01);
+    context.save();
+    context.beginPath();
+    context.moveTo(source.x, source.y);
+    context.lineTo(target.x, target.y);
+    context.strokeStyle = withAlpha(CYCLE_COLOR, alpha);
+    context.lineWidth = 3.2 / scale;
+    context.shadowColor = CYCLE_COLOR;
+    context.shadowBlur = 9 / scale;
+    context.stroke();
+    context.restore();
+  }, [cyclesVisible, hasActiveFocus, isHighlightedLink]);
+
+  const isLinkVisible = useCallback((link: LinkEndpoints) => (
+    (link.inCycle === true && cyclesVisible) || importsVisible
+  ), [cyclesVisible, importsVisible]);
 
   const handleEngineStop = useCallback(() => {
     if (hasFittedGraph.current || graphData.nodes.length === 0) return;
@@ -403,6 +560,55 @@ export function GraphCanvas() {
       aria-label="Interactive dependency graph"
       ref={containerRef}
     >
+      <div className="graph-view-switch" role="group" aria-label="Graph view">
+        <button
+          type="button"
+          className={viewMode === 'file' ? 'graph-view-switch__button is-active' : 'graph-view-switch__button'}
+          aria-pressed={viewMode === 'file'}
+          onClick={() => setViewMode('file')}
+        >
+          File graph
+        </button>
+        <button
+          type="button"
+          className={viewMode === 'function' ? 'graph-view-switch__button is-active' : 'graph-view-switch__button'}
+          aria-pressed={viewMode === 'function'}
+          onClick={() => setViewMode('function')}
+        >
+          Function graph
+        </button>
+      </div>
+      {phase === 'ready' && graph && (
+      <div className="edge-toggle-toolbar" role="group" aria-label="Edge visibility">
+        <button
+          type="button"
+          aria-pressed={importsVisible}
+          disabled={viewMode !== 'file'}
+          title={viewMode === 'file' ? 'Toggle import edges' : 'Imports applies to the file graph.'}
+          onClick={() => toggleEdges('imports')}
+        >
+          Imports
+        </button>
+        <button
+          type="button"
+          aria-pressed={callsVisible}
+          disabled={viewMode !== 'function'}
+          title={viewMode === 'function' ? 'Toggle function call edges' : 'Calls applies to the function graph.'}
+          onClick={() => toggleEdges('calls')}
+        >
+          Calls
+        </button>
+        <button
+          type="button"
+          aria-pressed={cyclesVisible}
+          disabled={viewMode !== 'file'}
+          title={viewMode === 'file' ? 'Toggle circular import edges' : 'Cycles applies to the file graph.'}
+          onClick={() => toggleEdges('cycles')}
+        >
+          Cycles
+        </button>
+      </div>
+      )}
       {phase === 'idle' && !graph && (
         <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
@@ -416,15 +622,25 @@ export function GraphCanvas() {
           onRetry={(url) => { void analyze(url); }}
         />
       )}
-      {phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+      {viewMode === 'function' && phase === 'ready' && graph && (
+        <FunctionGraphCanvas />
+      )}
+      {viewMode === 'file' && phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+        <div className="file-graph-stage">
         <ForceGraph2D<GraphNode, GraphEdge>
           ref={graphRef}
           width={canvasSize.width}
-          height={canvasSize.height}
+          height={Math.max(0, canvasSize.height - 48)}
           graphData={graphData}
           backgroundColor="rgba(0, 0, 0, 0)"
           onRenderFramePre={resetLabelBounds}
           nodeCanvasObject={drawNode}
+          linkCanvasObjectMode="after"
+          linkCanvasObject={drawCycleLink}
+          linkVisibility={isLinkVisible}
+          autoPauseRedraw={(
+            (hasCycleEdges && cyclesVisible && animateCyclePulse) || symbolPulse !== null
+          ) ? false : undefined}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
           linkDirectionalArrowLength={4}
@@ -438,17 +654,18 @@ export function GraphCanvas() {
           onNodeHover={handleNodeHover}
           onNodeClick={(node) => {
             if (node.id != null) focusNode(String(node.id));
-            else selectNode(null);
+            else clearFocus();
           }}
-          onBackgroundClick={() => selectNode(null)}
+          onBackgroundClick={clearFocus}
           showPointerCursor={(object) => Boolean(object && 'id' in object)}
           enableNodeDrag
           enableZoomInteraction
           enablePanInteraction
         />
+        </div>
       )}
-      {phase === 'ready' && graph && <GraphLegend legend={legend} />}
-      <NodeTooltip containerRef={containerRef} />
+      {viewMode === 'file' && phase === 'ready' && graph && <GraphLegend legend={legend} />}
+      {viewMode === 'file' && <NodeTooltip containerRef={containerRef} />}
     </main>
   );
 }
