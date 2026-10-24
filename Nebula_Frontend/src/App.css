@@ -613,6 +613,22 @@
   font-size: 9px;
 }
 
+.graph-legend-cycle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: #fca5a5;
+}
+
+.graph-legend-cycle-key {
+  width: 8px;
+  height: 3px;
+  border-radius: 999px;
+  background: #f87171;
+  box-shadow: 0 0 7px rgb(248 113 113 / 75%);
+}
+
 .graph-legend-relations {
   display: flex;
   flex-wrap: wrap;
