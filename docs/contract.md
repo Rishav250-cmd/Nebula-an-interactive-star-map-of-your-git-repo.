@@ -60,7 +60,7 @@ type Node = {
   tokens: number; // token count
   complexity: number; // file cyclomatic complexity
   functionCount: number; // functions and methods; excludes class declarations
-  churn: number; // file change activity count for the analysis window
+  churn: number; // commits touching this file in the last 12 months; 0 if unavailable
   healthScore: number | null; // normalized score from 0 to 100 when available
   isGodFile: boolean;
   inCycle: boolean; // true when this file belongs to a circular import component
@@ -82,7 +82,7 @@ type Edge = {
 
 `cycles` contains strongly connected import components with more than one file, plus self-importing files. Files inside each cycle are sorted alphabetically; cycles are sorted by descending size and then by their first file. A node has `inCycle: true` when it belongs to one of these components. An edge has `inCycle: true` only when both endpoints belong to the same component; all other edges have `false`.
 
-`complexity` is the file's cyclomatic complexity. `functionCount` counts functions and methods, excluding class declaration entries. `churn` is owned by Varish; `healthScore` and `isGodFile` are planned for Day 4. Their current values are `0`, `null`, and `false`, respectively.
+`complexity` is the file's cyclomatic complexity. `functionCount` counts functions and methods, excluding class declaration entries. `churn` counts commits in the last 12 months that touched a file, counting a path at most once per commit. It reflects only Git history available in the checkout. Repository clones are limited to 200 commits; a checkout Git identifies as shallow reports zero churn. ZIP uploads have no Git history and report zero. `healthScore` and `isGodFile` are planned for Day 4; their current values are `null` and `false`, respectively.
 
 ### CallGraph
 
