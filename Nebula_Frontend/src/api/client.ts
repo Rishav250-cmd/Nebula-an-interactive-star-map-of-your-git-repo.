@@ -13,6 +13,13 @@ export type FileResponse = {
   content: string;
   language: string;
   loc: number;
+  functions?: Array<{
+    name: string;
+    kind: 'function' | 'method' | 'class';
+    line: number;
+    endLine: number;
+    complexity: number;
+  }>;
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {

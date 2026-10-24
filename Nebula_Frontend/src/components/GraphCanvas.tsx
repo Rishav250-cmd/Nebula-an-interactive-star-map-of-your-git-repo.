@@ -10,6 +10,7 @@ import { NodeTooltip } from './NodeTooltip';
 import { LoadingOverlay } from './LoadingOverlay';
 import { ErrorState } from './ErrorState';
 import { GraphLegend } from './GraphLegend';
+import { FunctionGraphCanvas } from './FunctionGraphCanvas';
 import { useGraphStore } from '../store/useGraphStore';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
@@ -100,6 +101,8 @@ export function GraphCanvas() {
   const clearFocus = useGraphStore((state) => state.clearFocus);
   const focusNode = useGraphStore((state) => state.focusNode);
   const hoverNode = useGraphStore((state) => state.hoverNode);
+  const viewMode = useGraphStore((state) => state.viewMode);
+  const setViewMode = useGraphStore((state) => state.setViewMode);
 
   const containerRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<GraphInstance | undefined>(undefined);
@@ -521,6 +524,24 @@ export function GraphCanvas() {
       aria-label="Interactive dependency graph"
       ref={containerRef}
     >
+      <div className="graph-view-switch" role="group" aria-label="Graph view">
+        <button
+          type="button"
+          className={viewMode === 'file' ? 'graph-view-switch__button is-active' : 'graph-view-switch__button'}
+          aria-pressed={viewMode === 'file'}
+          onClick={() => setViewMode('file')}
+        >
+          File graph
+        </button>
+        <button
+          type="button"
+          className={viewMode === 'function' ? 'graph-view-switch__button is-active' : 'graph-view-switch__button'}
+          aria-pressed={viewMode === 'function'}
+          onClick={() => setViewMode('function')}
+        >
+          Function graph
+        </button>
+      </div>
       {phase === 'idle' && !graph && (
         <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
@@ -534,11 +555,15 @@ export function GraphCanvas() {
           onRetry={(url) => { void analyze(url); }}
         />
       )}
-      {phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+      {viewMode === 'function' && phase === 'ready' && graph && (
+        <FunctionGraphCanvas />
+      )}
+      {viewMode === 'file' && phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+        <div className="file-graph-stage">
         <ForceGraph2D<GraphNode, GraphEdge>
           ref={graphRef}
           width={canvasSize.width}
-          height={canvasSize.height}
+          height={Math.max(0, canvasSize.height - 48)}
           graphData={graphData}
           backgroundColor="rgba(0, 0, 0, 0)"
           onRenderFramePre={resetLabelBounds}
@@ -568,9 +593,10 @@ export function GraphCanvas() {
           enableZoomInteraction
           enablePanInteraction
         />
+        </div>
       )}
-      {phase === 'ready' && graph && <GraphLegend legend={legend} />}
-      <NodeTooltip containerRef={containerRef} />
+      {viewMode === 'file' && phase === 'ready' && graph && <GraphLegend legend={legend} />}
+      {viewMode === 'file' && <NodeTooltip containerRef={containerRef} />}
     </main>
   );
 }

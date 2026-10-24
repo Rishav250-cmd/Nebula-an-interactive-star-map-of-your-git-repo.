@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
@@ -38,8 +38,12 @@ export function RightPanel() {
   const analysisId = useGraphStore((state) => state.analysisId);
   const graph = useGraphStore((state) => state.graph);
   const selectedId = useGraphStore((state) => state.selectedId);
+  const focusLine = useGraphStore((state) => state.focusLine);
+  const setFocusLine = useGraphStore((state) => state.setFocusLine);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
+  const codeViewportRef = useRef<HTMLDivElement | null>(null);
   const [fileState, setFileState] = useState<FileLoadState>({ key: null, status: 'idle' });
+  const [flashedLine, setFlashedLine] = useState<number | null>(null);
   const requestKey = analysisId && selectedId ? `${analysisId}\0${selectedId}` : null;
 
   useEffect(() => {
@@ -74,6 +78,23 @@ export function RightPanel() {
       : { key: requestKey, status: 'loading' } as const;
   const file = visibleState.status === 'ready' ? visibleState.file : null;
 
+  useEffect(() => {
+    if (!focusLine || !file || !codeViewportRef.current) return;
+    setFlashedLine(focusLine);
+    let frameId = 0;
+    const timeoutId = window.setTimeout(() => setFlashedLine(null), 1_500);
+    frameId = requestAnimationFrame(() => {
+      const viewport = codeViewportRef.current;
+      const target = viewport?.querySelector<HTMLElement>(`[data-line-number="${focusLine}"]`);
+      if (!viewport || !target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    });
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [file, focusLine, selectedId]);
+
   return (
     <aside className="side-panel side-panel--right" aria-labelledby="code-title">
       <div className="code-panel-header">
@@ -87,12 +108,29 @@ export function RightPanel() {
       )}
       {selectedId && <p className="code-file-path" title={selectedId}>{selectedId}</p>}
       {file && <p className="code-loc">{file.loc.toLocaleString()} lines</p>}
+      {file?.functions && file.functions.length > 0 && (
+        <div className="function-complexity-list" aria-label="Functions and complexity">
+          {file.functions.map((fn) => (
+            <button
+              type="button"
+              className="function-complexity-badge"
+              key={`${fn.name}:${fn.line}`}
+              title={`${fn.kind} · lines ${fn.line}–${fn.endLine}`}
+              aria-label={`${fn.name}, complexity ${fn.complexity}, line ${fn.line}`}
+              onClick={() => setFocusLine(fn.line)}
+            >
+              <span>{fn.name}</span><b>C{fn.complexity}</b>
+            </button>
+          ))}
+        </div>
+      )}
       {!selectedId && <p className="panel-placeholder">Select a file to view its code.</p>}
       {visibleState.status === 'loading' && <p className="panel-placeholder" role="status">Loading source…</p>}
       {visibleState.status === 'error' && <p className="code-error" role="alert">{visibleState.message}</p>}
       {file && (
         <div
           className="code-content"
+          ref={codeViewportRef}
           role="region"
           tabIndex={0}
           aria-label={`Source code for ${selectedId}`}
@@ -102,6 +140,12 @@ export function RightPanel() {
             style={vscDarkPlus}
             showLineNumbers
             showInlineLineNumbers={false}
+            wrapLines
+            lineProps={(lineNumber) => ({
+              'data-line-number': lineNumber,
+              className: flashedLine === lineNumber ? 'code-line--flash' : undefined,
+              style: { display: 'block' },
+            })}
             lineNumberContainerStyle={{
               position: 'sticky',
               left: 0,
