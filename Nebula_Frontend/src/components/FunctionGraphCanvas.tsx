@@ -37,6 +37,14 @@ function shortFileName(file: string): string {
   return file.split('/').pop() ?? file;
 }
 
+function truncateFunctionName(name: string, maxLength = 32): string {
+  if (name.length <= maxLength) return name;
+  const visibleLength = maxLength - 1;
+  const prefixLength = Math.ceil(visibleLength / 2);
+  const suffixLength = Math.floor(visibleLength / 2);
+  return `${name.slice(0, prefixLength)}…${name.slice(-suffixLength)}`;
+}
+
 export function FunctionGraphCanvas() {
   const graph = useGraphStore((state) => state.graph);
   const selectedId = useGraphStore((state) => state.selectedId);
@@ -165,7 +173,7 @@ export function FunctionGraphCanvas() {
     context.fillStyle = '#f1f5f9';
     context.shadowColor = 'rgba(5, 6, 15, 0.9)';
     context.shadowBlur = 4 / scale;
-    context.fillText(node.name ?? '', node.x, node.y + radius + 11 / scale);
+    context.fillText(truncateFunctionName(node.name ?? ''), node.x, node.y + radius + 11 / scale);
     if (node.external) {
       context.font = `${8.5 / scale}px Inter, ui-sans-serif, sans-serif`;
       context.fillStyle = '#aab5c8';
@@ -281,7 +289,7 @@ export function FunctionGraphCanvas() {
           role="status"
           style={{ left: Math.min(pointer.x + 14, Math.max(8, canvasSize.width - 250)), top: pointer.y + 14 }}
         >
-          <strong>{hoveredNode.name}</strong>
+          <strong title={hoveredNode.name}>{hoveredNode.name}</strong>
           <span>{hoveredNode.kind}</span>
           <span title={hoveredNode.file}>{hoveredNode.file}:{hoveredNode.line}</span>
           <span>Complexity {hoveredNode.complexity}</span>
