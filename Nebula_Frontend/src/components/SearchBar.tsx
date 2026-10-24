@@ -2,11 +2,43 @@ import { useEffect, useId, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { searchRepositoryFiles, type SearchResult } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
+import type { CallGraphNode } from '../types/graph';
+
+type PendingSymbol = Extract<SearchResult, { type: 'symbol' }>;
+
+function SymbolIcon({ kind }: { kind: string }) {
+  if (kind === 'class') {
+    return (
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+        <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="2" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M5 5.25h6M5 8h6M5 10.75h3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+      <path d="M5.25 3.25 1.75 8l3.5 4.75M10.75 3.25 14.25 8l-3.5 4.75M9.25 2.25l-2.5 11.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function matchesSymbol(node: CallGraphNode, symbol: PendingSymbol): boolean {
+  return !node.external
+    && node.file === symbol.path
+    && node.name === symbol.name
+    && node.line === symbol.line;
+}
 
 export function SearchBar() {
   const analysisId = useGraphStore((state) => state.analysisId);
   const status = useGraphStore((state) => state.status);
   const focusNode = useGraphStore((state) => state.focusNode);
+  const setFocusLine = useGraphStore((state) => state.setFocusLine);
+  const viewMode = useGraphStore((state) => state.viewMode);
+  const callGraph = useGraphStore((state) => state.callGraph);
+  const callGraphStatus = useGraphStore((state) => state.callGraphStatus);
+  const selectFunction = useGraphStore((state) => state.selectFunction);
   const listboxId = useId();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -14,6 +46,18 @@ export function SearchBar() {
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [pendingSymbol, setPendingSymbol] = useState<PendingSymbol | null>(null);
+
+  useEffect(() => {
+    if (!pendingSymbol || viewMode !== 'function') return;
+    if (callGraphStatus === 'loading' || callGraphStatus === 'idle') return;
+
+    const match = callGraphStatus === 'ready'
+      ? callGraph?.nodes.find((node) => matchesSymbol(node, pendingSymbol))
+      : undefined;
+    selectFunction(match?.id ?? null);
+    setPendingSymbol(null);
+  }, [callGraph, callGraphStatus, pendingSymbol, selectFunction, viewMode]);
 
   useEffect(() => {
     const searchQuery = query.trim();
@@ -31,7 +75,10 @@ export function SearchBar() {
       searchRepositoryFiles(analysisId, searchQuery, controller.signal)
         .then((nextResults) => {
           if (controller.signal.aborted) return;
-          setResults(nextResults);
+          setResults([
+            ...nextResults.filter((result) => result.type === 'file'),
+            ...nextResults.filter((result) => result.type === 'symbol'),
+          ]);
           setActiveIndex(0);
         })
         .catch((searchError: unknown) => {
@@ -50,12 +97,65 @@ export function SearchBar() {
     };
   }, [analysisId, query, status]);
 
+  useEffect(() => {
+    if (!isOpen || !results[activeIndex]) return;
+    document.getElementById(`${listboxId}-option-${activeIndex}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex, isOpen, listboxId, results]);
+
   const chooseResult = (result: SearchResult) => {
     focusNode(result.path);
+    if (result.type === 'symbol') {
+      setFocusLine(result.line);
+      setPendingSymbol(viewMode === 'function' ? result : null);
+    } else {
+      setFocusLine(null);
+      setPendingSymbol(null);
+    }
     setQuery('');
     setResults([]);
     setIsOpen(false);
   };
+
+  const indexedResults = results.map((result, index) => ({ result, index }));
+  const fileResults = indexedResults.filter(({ result }) => result.type === 'file');
+  const symbolResults = indexedResults.filter(({ result }) => result.type === 'symbol');
+  const hasSymbols = symbolResults.length > 0;
+
+  const renderResult = ({ result, index }: { result: SearchResult; index: number }) => (
+    <li key={`${result.type}:${result.path}:${result.type === 'symbol' ? `${result.line}:${result.name}` : result.name}`}>
+      <button
+        id={`${listboxId}-option-${index}`}
+        className={`search-result${index === activeIndex ? ' search-result--active' : ''}${result.type === 'symbol' ? ' search-result--symbol' : ''}`}
+        type="button"
+        role="option"
+        aria-label={result.type === 'symbol'
+          ? `${result.kind} ${result.name}, ${result.path}:${result.line}`
+          : `${result.name}, ${result.path}`}
+        aria-selected={index === activeIndex}
+        onMouseDown={(event) => event.preventDefault()}
+        onMouseEnter={() => setActiveIndex(index)}
+        onClick={() => chooseResult(result)}
+      >
+        {result.type === 'symbol' ? (
+          <>
+            <span className={`search-result-icon search-result-icon--${result.kind === 'class' ? 'class' : 'function'}`}>
+              <SymbolIcon kind={result.kind} />
+            </span>
+            <span className="search-result-symbol-copy">
+              <span className="search-result-name">{result.name}</span>
+              <span className="search-result-path">{result.path}:{result.line}</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="search-result-name">{result.name}</span>
+            <span className="search-result-path">{result.path}</span>
+          </>
+        )}
+      </button>
+    </li>
+  );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
@@ -115,24 +215,18 @@ export function SearchBar() {
             <p className="search-message" role="status">No matching files</p>
           )}
           {results.length > 0 && (
-            <ul className="search-results" id={listboxId} role="listbox" aria-label="Repository files">
-              {results.map((result, index) => (
-                <li key={result.path}>
-                  <button
-                    id={`${listboxId}-option-${index}`}
-                    className={`search-result${index === activeIndex ? ' search-result--active' : ''}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeIndex}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => chooseResult(result)}
-                  >
-                    <span className="search-result-name">{result.name}</span>
-                    <span className="search-result-path">{result.path}</span>
-                  </button>
-                </li>
-              ))}
+            <ul
+              className="search-results"
+              id={listboxId}
+              role="listbox"
+              aria-label={hasSymbols ? 'Repository files and symbols' : 'Repository files'}
+            >
+              {hasSymbols && fileResults.length > 0 && (
+                <li className="search-results-group" role="presentation">Files</li>
+              )}
+              {fileResults.map(renderResult)}
+              {hasSymbols && <li className="search-results-group" role="presentation">Symbols</li>}
+              {symbolResults.map(renderResult)}
             </ul>
           )}
         </div>

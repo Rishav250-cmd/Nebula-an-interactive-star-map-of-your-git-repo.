@@ -98,6 +98,7 @@ export function GraphCanvas() {
   const cyclesVisible = useGraphStore((state) => state.edgeToggles.cycles);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
+  const focusLine = useGraphStore((state) => state.focusLine);
   const clearFocus = useGraphStore((state) => state.clearFocus);
   const focusNode = useGraphStore((state) => state.focusNode);
   const hoverNode = useGraphStore((state) => state.hoverNode);
@@ -110,7 +111,9 @@ export function GraphCanvas() {
   const handledFocusRequest = useRef(focusRequest);
   const labelBounds = useRef<LabelBounds[]>([]);
   const cyclePulseAlpha = useRef(0.35);
+  const handledSymbolFocusRequest = useRef(focusRequest);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
@@ -180,6 +183,16 @@ export function GraphCanvas() {
     window.addEventListener('keydown', clearSelectionOnEscape);
     return () => window.removeEventListener('keydown', clearSelectionOnEscape);
   }, [clearFocus, selectedCycleIndex, selectedId]);
+
+  useEffect(() => {
+    if (focusRequest === handledSymbolFocusRequest.current) return;
+    handledSymbolFocusRequest.current = focusRequest;
+    if (viewMode !== 'file' || !selectedId || focusLine === null) return;
+
+    setSymbolPulse({ id: selectedId, startedAt: performance.now() });
+    const timeoutId = window.setTimeout(() => setSymbolPulse(null), 1_500);
+    return () => window.clearTimeout(timeoutId);
+  }, [focusLine, focusRequest, selectedId, viewMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -326,6 +339,7 @@ export function GraphCanvas() {
     const radius = nodeRadius(loc);
     const isGraphSelected = id === graphSelectedId;
     const isHovered = id === hoveredId;
+    const isSymbolPulse = symbolPulse?.id === id;
     const isRelated = relatedNodeIds.has(id);
     const isInSelectedCycle = selectedCycleNodeIds.has(id);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
@@ -358,6 +372,19 @@ export function GraphCanvas() {
       context.lineWidth = 2 / zoomScale;
       context.shadowColor = CYCLE_COLOR;
       context.shadowBlur = 8 / zoomScale;
+      context.stroke();
+      context.shadowBlur = 0;
+    }
+
+    if (isSymbolPulse && symbolPulse) {
+      const elapsed = performance.now() - symbolPulse.startedAt;
+      const wave = 0.5 + 0.5 * Math.sin(elapsed / 95);
+      context.beginPath();
+      context.arc(node.x, node.y, radius + (8 + wave * 5) / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = withAlpha('#e9d5ff', 0.35 + wave * 0.6);
+      context.lineWidth = (1.6 + wave * 1.3) / zoomScale;
+      context.shadowColor = '#c4b5fd';
+      context.shadowBlur = (8 + wave * 8) / zoomScale;
       context.stroke();
       context.shadowBlur = 0;
     }
@@ -435,7 +462,7 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds]);
+  }, [adjacency, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse]);
 
   const resetLabelBounds = useCallback(() => {
     labelBounds.current = [];
@@ -571,7 +598,7 @@ export function GraphCanvas() {
           linkCanvasObjectMode="after"
           linkCanvasObject={drawCycleLink}
           linkVisibility={isLinkVisible}
-          autoPauseRedraw={hasCycleEdges && cyclesVisible ? false : undefined}
+          autoPauseRedraw={(hasCycleEdges && cyclesVisible) || symbolPulse !== null ? false : undefined}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
           linkDirectionalArrowLength={4}
