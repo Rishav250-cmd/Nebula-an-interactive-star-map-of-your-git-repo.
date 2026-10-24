@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
+import { getChurn } from "./churn.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
@@ -17,6 +18,7 @@ export async function buildGraph({
   files,
   repoUrl,
   parseFileImpl = parseFile,
+  getChurnImpl = getChurn,
 }) {
   let sha;
   try {
@@ -44,6 +46,7 @@ export async function buildGraph({
     });
   }
 
+  const churnByFile = await getChurnImpl(dir);
   const aliases = await loadAliases(dir);
   const parsedFiles = [];
   const analysis = { files: {}, aliases };
@@ -80,7 +83,7 @@ export async function buildGraph({
     functionCount: analysis.files[filePath].functions.filter(
       (fn) => fn.kind !== "class",
     ).length,
-    churn: 0,
+    churn: churnByFile.get(filePath) ?? 0,
     healthScore: null,
     isGodFile: false,
     inCycle: false,

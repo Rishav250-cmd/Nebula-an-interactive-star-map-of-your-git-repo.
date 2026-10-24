@@ -1,0 +1,34 @@
+* [33m21594ed[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mvarish/day2-file-search[m[33m, [m[1;31morigin/varish/day2-file-search[m[33m)[m Add GET /api/file and GET /api/search endpoints with tests
+*   [33m3b48438[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m Merge pull request #8 from Rishav250-cmd/Rishav_branch , Day 2 work completed
+[32m|[m[33m\[m  
+[32m|[m * [33m9a146b9[m[33m ([m[1;31morigin/Rishav_branch[m[33m)[m docs: document day two backend endpoints
+[32m|[m * [33m0a29a0d[m feat: add secure zip repository uploads
+[32m|[m * [33m556bcce[m feat: add cached graph API endpoints
+[32m|[m * [33m4dcb95b[m feat: build bounded repository dependency graphs
+[32m|[m * [33m6140f41[m feat: resolve relative and aliased imports
+[32m|[m * [33md909801[m feat: parse repository imports with Babel
+[32m|[m * [33md1d1a09[m chore: install parser and archive dependencies
+[32m|[m * [33mbdbc489[m test: verify cloned repository SHA
+[32m|[m * [33m1afb60d[m feat: build graphs from cloned repositories
+[32m|[m[32m/[m  
+*   [33m32efa3b[m Merge pull request #6 from Rishav250-cmd/Rishav_branch
+[34m|[m[35m\[m  
+[34m|[m * [33m82bff07[m Umesh work of day1 completed
+[34m|[m * [33m0f30c77[m docs: document frontend setup
+[34m|[m * [33m4ee8a61[m feat: add large graph performance fixture
+[34m|[m * [33m0916ed5[m feat: add graph node hover tooltips
+[34m|[m * [33m573972a[m feat: render dependency graph
+[34m|[m * [33ma4efa21[m feat: load mock graph from api
+[34m|[m * [33m3bcac01[m feat: add galaxy layout shell
+[34m|[m * [33m537dd0e[m feat: add graph types and store
+[34m|[m * [33m8b78d29[m style: add dark galaxy theme
+[34m|[m * [33m77f3fbd[m chore: install graph and state dependencies
+[34m|[m[34m/[m  
+*   [33md00fd92[m Merge pull request #5 from Rishav250-cmd/Rishav_branch
+[36m|[m[1;31m\[m  
+[36m|[m *   [33m8be642b[m Merge pull request #3 from Rishav250-cmd/main
+[36m|[m [1;32m|[m[1;33m\[m  
+* [1;32m|[m [1;33m\[m   [33m2a71834[m Merge pull request #4 from Rishav250-cmd/varish/day1-helpers
+[1;33m|[m[1;35m\[m [1;32m\[m [1;33m\[m  
+[1;33m|[m [1;35m|[m[1;33m_[m[1;32m|[m[1;33m/[m  
+[1;33m|[m[1;33m/[m[1;35m|[m [1;32m|[m   
