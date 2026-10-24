@@ -26,6 +26,8 @@ The server listens on port `5000` by default. Set `PORT` in `.env` to use a diff
 
 `POST /api/analyze` accepts `{ "url": "https://github.com/owner/repo" }`, shallow-clones the repository, builds its graph, and returns `{ "id": string, "status": "ready" }`. The clone directory, URL, and cached graph are recorded in memory.
 
+Repository clones remain limited to 200 commits. Churn can use only Git history available in the clone; a checkout Git identifies as shallow returns zero churn, while a complete checkout counts commits in the configured analysis window.
+
 ## Graph endpoints
 
 `POST /api/graph` accepts the same `{ "url": "https://github.com/owner/repo" }` body and returns the graph with an extra `id` field. `GET /api/graph/:id` returns the cached graph, or builds and caches it if needed. Unknown IDs return HTTP `404`.
