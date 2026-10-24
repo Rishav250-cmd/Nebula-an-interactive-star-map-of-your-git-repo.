@@ -39,6 +39,10 @@ test("analysis cache saves atomically and round-trips analysis maps", async () =
     warnings: [],
   };
   const analysis = {
+    churn: new Map([
+      ["src/index.js", 3],
+      ["src/helper.js", 1],
+    ]),
     files: {
       "src/index.js": {
         functions: [],
@@ -70,6 +74,8 @@ test("analysis cache saves atomically and round-trips analysis maps", async () =
     const cached = await loadAnalysisCache(REPO_URL, SHA_ONE, { cacheDir });
     assert.equal(cached.version, ANALYSIS_VERSION);
     assert.deepEqual(cached.graph, graph);
+    assert.ok(cached.analysis.churn instanceof Map);
+    assert.deepEqual(cached.analysis.churn, analysis.churn);
     assert.ok(cached.analysis.files["src/index.js"].bindings instanceof Map);
     assert.deepEqual(
       cached.analysis.files["src/index.js"].bindings.get("helper"),
