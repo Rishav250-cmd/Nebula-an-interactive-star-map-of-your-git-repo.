@@ -1,9 +1,12 @@
 import { create } from 'zustand';
-import { analyzeRepo, fetchGraph } from '../api/client';
-import type { GraphData, GraphWarning } from '../types/graph';
+import { analyzeRepo, clearCallGraphCache, fetchCallGraph, fetchGraph } from '../api/client';
+import type { CallGraph, GraphData, GraphWarning } from '../types/graph';
 
 export type GraphStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type AnalysisPhase = 'idle' | 'cloning' | 'parsing' | 'ready' | 'error';
+export type ViewMode = 'file' | 'function';
+export type CallGraphStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type EdgeToggleKind = 'imports' | 'calls' | 'cycles';
 
 const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const INVALID_URL_MESSAGE = 'Enter a valid GitHub repository URL, such as https://github.com/owner/repo.';
@@ -23,6 +26,15 @@ type GraphStore = {
   selectedId: string | null;
   hoveredId: string | null;
   focusRequest: number;
+  viewMode: ViewMode;
+  callGraph: CallGraph | null;
+  callGraphStatus: CallGraphStatus;
+  callGraphError: string | null;
+  callGraphDepth: 1 | 2;
+  selectedFunctionId: string | null;
+  focusLine: number | null;
+  selectedCycleIndex: number | null;
+  edgeToggles: { imports: boolean; calls: boolean; cycles: boolean };
   setRepoUrl: (url: string) => void;
   setGraph: (graph: GraphData | null) => void;
   setAnalysisId: (id: string | null) => void;
@@ -31,11 +43,43 @@ type GraphStore = {
   selectNode: (id: string | null) => void;
   hoverNode: (id: string | null) => void;
   focusNode: (id: string) => void;
+  setViewMode: (mode: ViewMode) => void;
+  loadCallGraph: () => Promise<void>;
+  setCallGraphDepth: (depth: 1 | 2) => void;
+  selectFunction: (id: string | null) => void;
+  setFocusLine: (line: number | null) => void;
+  selectCycle: (index: number | null) => void;
+  clearFocus: () => void;
+  toggleEdges: (kind: EdgeToggleKind) => void;
   analyze: (url: string) => Promise<void>;
 };
 
-export const useGraphStore = create<GraphStore>()((set) => {
+export const useGraphStore = create<GraphStore>()((set, get) => {
   let requestCounter = 0;
+  let callGraphRequestCounter = 0;
+
+  const cancelCallGraphRequest = () => {
+    callGraphRequestCounter += 1;
+  };
+
+  const clearCallGraphState = () => {
+    cancelCallGraphRequest();
+    set({ callGraph: null, callGraphStatus: 'idle', callGraphError: null });
+  };
+
+  const resetAnalysisView = () => {
+    cancelCallGraphRequest();
+    clearCallGraphCache();
+    set({
+      viewMode: 'file',
+      callGraph: null,
+      callGraphStatus: 'idle',
+      callGraphError: null,
+      selectedCycleIndex: null,
+      selectedFunctionId: null,
+      focusLine: null,
+    });
+  };
 
   return {
     repoUrl: '',
@@ -52,6 +96,15 @@ export const useGraphStore = create<GraphStore>()((set) => {
     selectedId: null,
     hoveredId: null,
     focusRequest: 0,
+    viewMode: 'file',
+    callGraph: null,
+    callGraphStatus: 'idle',
+    callGraphError: null,
+    callGraphDepth: 1,
+    selectedFunctionId: null,
+    focusLine: null,
+    selectedCycleIndex: null,
+    edgeToggles: { imports: true, calls: true, cycles: true },
 
     setRepoUrl: (repoUrl) => set({ repoUrl }),
     setGraph: (graph) => set({ graph }),
@@ -68,19 +121,125 @@ export const useGraphStore = create<GraphStore>()((set) => {
       };
     }),
     setProgressMessage: (progressMessage) => set({ progressMessage }),
-    selectNode: (selectedId) => set({ selectedId }),
+    selectNode: (selectedId) => {
+      const previousId = get().selectedId;
+      set((state) => ({
+        selectedId,
+        ...(previousId !== selectedId ? {
+          selectedFunctionId: null,
+          focusLine: null,
+          selectedCycleIndex: selectedId ? null : state.selectedCycleIndex,
+        } : {}),
+      }));
+      if (previousId !== selectedId) {
+        if (selectedId && get().viewMode === 'function') void get().loadCallGraph();
+        else clearCallGraphState();
+      }
+    },
     hoverNode: (hoveredId) => set({ hoveredId }),
-    focusNode: (selectedId) =>
+    focusNode: (selectedId) => {
+      const previousId = get().selectedId;
       set((state) => ({
         selectedId,
         focusRequest: state.focusRequest + 1,
-      })),
+        ...(previousId !== selectedId ? {
+          selectedFunctionId: null,
+          focusLine: null,
+          selectedCycleIndex: null,
+        } : {}),
+      }));
+      if (previousId !== selectedId) {
+        if (get().viewMode === 'function') void get().loadCallGraph();
+        else clearCallGraphState();
+      }
+    },
+    setViewMode: (viewMode) => {
+      const previousMode = get().viewMode;
+      if (previousMode === viewMode) return;
+      set({ viewMode });
+      if (viewMode === 'function' && get().selectedId) {
+        void get().loadCallGraph();
+      } else if (viewMode === 'file') {
+        cancelCallGraphRequest();
+      }
+    },
+    loadCallGraph: async () => {
+      const { repoId, selectedId, callGraphDepth } = get();
+      const requestId = ++callGraphRequestCounter;
+      if (!repoId || !selectedId) {
+        set({ callGraph: null, callGraphStatus: 'idle', callGraphError: null });
+        return;
+      }
+
+      set({ callGraph: null, callGraphStatus: 'loading', callGraphError: null });
+      try {
+        const callGraph = await fetchCallGraph(repoId, selectedId, callGraphDepth);
+        const current = get();
+        if (
+          requestId !== callGraphRequestCounter
+          || current.repoId !== repoId
+          || current.selectedId !== selectedId
+          || current.callGraphDepth !== callGraphDepth
+        ) return;
+        set({ callGraph, callGraphStatus: 'ready', callGraphError: null });
+      } catch (callGraphError: unknown) {
+        const current = get();
+        if (
+          requestId !== callGraphRequestCounter
+          || current.repoId !== repoId
+          || current.selectedId !== selectedId
+          || current.callGraphDepth !== callGraphDepth
+        ) return;
+        set({
+          callGraph: null,
+          callGraphStatus: 'error',
+          callGraphError: callGraphError instanceof Error
+            ? callGraphError.message
+            : 'Could not load this file\'s function graph.',
+        });
+      }
+    },
+    setCallGraphDepth: (callGraphDepth) => {
+      if (get().callGraphDepth === callGraphDepth) return;
+      set({ callGraphDepth });
+      if (get().viewMode === 'function' && get().selectedId) {
+        void get().loadCallGraph();
+      }
+    },
+    selectFunction: (selectedFunctionId) => set({ selectedFunctionId }),
+    setFocusLine: (focusLine) => set({ focusLine }),
+    selectCycle: (selectedCycleIndex) => {
+      if (selectedCycleIndex === null) {
+        set({ selectedCycleIndex: null });
+        return;
+      }
+      set({
+        selectedCycleIndex,
+        selectedId: null,
+        selectedFunctionId: null,
+        focusLine: null,
+      });
+      clearCallGraphState();
+    },
+    clearFocus: () => {
+      set({
+        selectedCycleIndex: null,
+        selectedId: null,
+        selectedFunctionId: null,
+        focusLine: null,
+      });
+      clearCallGraphState();
+    },
+    toggleEdges: (kind) => set((state) => ({
+      edgeToggles: { ...state.edgeToggles, [kind]: !state.edgeToggles[kind] },
+    })),
     analyze: async (url) => {
       const currentRequest = ++requestCounter;
       const submittedUrl = url.trim();
       const startedAt = Date.now();
 
       if (!GITHUB_REPO_URL.test(submittedUrl)) {
+        resetAnalysisView();
         set({
           repoUrl: submittedUrl,
           lastUrl: submittedUrl,
@@ -99,6 +258,7 @@ export const useGraphStore = create<GraphStore>()((set) => {
         return;
       }
 
+      resetAnalysisView();
       set({
         repoUrl: submittedUrl,
         lastUrl: submittedUrl,
@@ -130,6 +290,7 @@ export const useGraphStore = create<GraphStore>()((set) => {
         const graph = await fetchGraph(analysis.id);
         if (currentRequest !== requestCounter) return;
 
+        resetAnalysisView();
         set({
           graph,
           warnings: graph.warnings ?? [],
