@@ -8,14 +8,21 @@ import AdmZip from "adm-zip";
 import test from "node:test";
 import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { createApp } from "../app.js";
+import { buildGraph } from "../services/graph.js";
 
 test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nebula-api-test-"));
 
   try {
     await mkdir(path.join(root, "src"), { recursive: true });
-    await writeFile(path.join(root, "src", "index.js"), 'import { helper } from "./helper";\nexport const output = helper();');
-    await writeFile(path.join(root, "src", "helper.js"), 'export const helper = () => "ok";');
+    await writeFile(
+      path.join(root, "src", "index.js"),
+      'import { helper } from "./helper";\nexport const output = helper();',
+    );
+    await writeFile(
+      path.join(root, "src", "helper.js"),
+      'export const helper = () => "ok";',
+    );
     const git = simpleGit(root);
     await git.init();
     await git.addConfig("user.name", "Nebula Test");
@@ -24,6 +31,7 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
     await git.commit("create API fixture");
     const expectedSha = (await git.revparse(["HEAD"])).trim();
     const app = createApp({
+      getRemoteShaImpl: async () => null,
       cloneRepoImpl: async (url) => {
         assert.equal(url, "https://github.com/octocat/demo");
         return { id: "analysis-fixture", dir: root, sha: expectedSha };
@@ -38,24 +46,51 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
       });
 
       assert.equal(analyzeResponse.status, 200);
-      assert.deepEqual(await analyzeResponse.json(), { id: "analysis-fixture", status: "ready" });
+      assert.deepEqual(await analyzeResponse.json(), {
+        id: "analysis-fixture",
+        status: "ready",
+      });
       assert.equal(getAnalysis("analysis-fixture").dir, root);
-      assert.equal(getAnalysis("analysis-fixture").url, "https://github.com/octocat/demo");
+      assert.equal(
+        getAnalysis("analysis-fixture").url,
+        "https://github.com/octocat/demo",
+      );
 
-      const graphResponse = await fetch(`${baseUrl}/api/graph/analysis-fixture`);
+      const graphResponse = await fetch(
+        `${baseUrl}/api/graph/analysis-fixture`,
+      );
       const graph = await graphResponse.json();
 
       assert.equal(graphResponse.status, 200);
       assert.equal(graph.repo, "https://github.com/octocat/demo");
       assert.equal(graph.sha, expectedSha);
-      assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/helper.js", "src/index.js"]);
+      assert.deepEqual(
+        graph.nodes.map(({ id }) => id),
+        ["src/helper.js", "src/index.js"],
+      );
       assert.deepEqual(graph.edges, [
-        { source: "src/index.js", target: "src/helper.js", type: "import" },
+        {
+          source: "src/index.js",
+          target: "src/helper.js",
+          type: "import",
+          inCycle: false,
+        },
       ]);
       assert.deepEqual(graph.cycles, []);
       assert.deepEqual(graph.warnings, []);
       assert.deepEqual(Object.keys(graph.nodes[0]).sort(), [
-        "churn", "complexity", "fanIn", "fanOut", "folder", "healthScore", "id", "inCycle", "isGodFile", "loc", "tokens",
+        "churn",
+        "complexity",
+        "fanIn",
+        "fanOut",
+        "folder",
+        "functionCount",
+        "healthScore",
+        "id",
+        "inCycle",
+        "isGodFile",
+        "loc",
+        "tokens",
       ]);
       assert.equal(graph.nodes[0].healthScore, null);
       assert.equal(graph.nodes[0].fanIn, 1);
@@ -68,6 +103,7 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
 
 test("POST /api/analyze rejects invalid GitHub URLs", async () => {
   const app = createApp({
+    getRemoteShaImpl: async () => null,
     cloneRepoImpl: async () => {
       throw new Error("clone should not run");
     },
@@ -87,6 +123,7 @@ test("POST /api/analyze rejects invalid GitHub URLs", async () => {
 
 test("POST /api/analyze returns an error when cloning fails", async () => {
   const app = createApp({
+    getRemoteShaImpl: async () => null,
     cloneRepoImpl: async () => {
       throw new Error("clone failed");
     },
@@ -117,6 +154,92 @@ test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => 
   });
 });
 
+test("GET /api/callgraph validates requests and returns call graph; graph includes cycles", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nebula-callgraph-api-"));
+
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(
+      path.join(root, "src", "main.js"),
+      'import { helper } from "./helper.js";\nexport function run() { helper(); }\n',
+    );
+    await writeFile(
+      path.join(root, "src", "helper.js"),
+      'import { run } from "./main.js";\nexport function helper() {}\n',
+    );
+    await writeFile(path.join(root, "README.md"), "not code\n");
+
+    const built = await buildGraph({
+      id: "callgraph-api-fixture",
+      dir: root,
+      files: ["README.md", "src/main.js", "src/helper.js"],
+      repoUrl: "callgraph-api-fixture.zip",
+    });
+    storeAnalysis({
+      id: "callgraph-api-fixture",
+      dir: root,
+      url: "callgraph-api-fixture.zip",
+      graph: built.graph,
+      analysis: built.analysis,
+    });
+
+    await withServer(createApp(), async (baseUrl) => {
+      const success = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js`,
+      );
+      const callGraph = await success.json();
+      assert.equal(success.status, 200);
+      assert.equal(callGraph.file, "src/main.js");
+      assert.equal(callGraph.depth, 1);
+      assert.deepEqual(
+        callGraph.nodes.map(({ name, external }) => ({ name, external })),
+        [
+          { name: "run", external: false },
+          { name: "helper", external: true },
+        ],
+      );
+      assert.deepEqual(callGraph.edges, [
+        {
+          source: "src/main.js#run:2",
+          target: "src/helper.js#helper:2",
+          type: "call",
+        },
+      ]);
+
+      const missingPath = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture`,
+      );
+      assert.equal(missingPath.status, 400);
+
+      const unknown = await fetch(
+        `${baseUrl}/api/callgraph?id=unknown&path=src/main.js`,
+      );
+      assert.equal(unknown.status, 404);
+
+      const notAnalyzed = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=README.md`,
+      );
+      assert.equal(notAnalyzed.status, 404);
+
+      const invalidDepth = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js&depth=3`,
+      );
+      assert.equal(invalidDepth.status, 400);
+
+      const graphResponse = await fetch(
+        `${baseUrl}/api/graph/callgraph-api-fixture`,
+      );
+      const graph = await graphResponse.json();
+      assert.equal(graphResponse.status, 200);
+      assert.deepEqual(graph.cycles, [["src/helper.js", "src/main.js"]]);
+      assert.ok(graph.nodes.every((node) => node.inCycle));
+      assert.ok(graph.edges.every((edge) => edge.inCycle));
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/graph uses the shared clone/build pipeline and includes the id", async () => {
   const graph = {
     repo: "https://github.com/octocat/demo",
@@ -126,13 +249,15 @@ test("POST /api/graph uses the shared clone/build pipeline and includes the id",
     cycles: [],
     warnings: [],
   };
+  const analysis = { files: {} };
   let buildArguments;
   const app = createApp({
+    getRemoteShaImpl: async () => null,
     cloneRepoImpl: async () => ({ id: "direct-graph", dir: "/fixture/repo" }),
     listFilesImpl: async () => ["src/index.ts"],
     buildGraphImpl: async (options) => {
       buildArguments = options;
-      return graph;
+      return { graph, analysis };
     },
   });
 
@@ -152,6 +277,7 @@ test("POST /api/graph uses the shared clone/build pipeline and includes the id",
       repoUrl: "https://github.com/octocat/demo",
     });
     assert.equal(getAnalysis("direct-graph").graph, graph);
+    assert.equal(getAnalysis("direct-graph").analysis, analysis);
   });
 });
 
@@ -164,6 +290,7 @@ test("GET /api/graph/:id builds and caches a graph when it is not cached", async
     cycles: [],
     warnings: [],
   };
+  const analysis = { files: {} };
   storeAnalysis({ id: "lazy-analysis", dir: "/fixture/lazy", url: graph.repo });
   let buildCount = 0;
   const app = createApp({
@@ -173,7 +300,7 @@ test("GET /api/graph/:id builds and caches a graph when it is not cached", async
     },
     buildGraphImpl: async () => {
       buildCount += 1;
-      return graph;
+      return { graph, analysis };
     },
   });
 
@@ -186,6 +313,7 @@ test("GET /api/graph/:id builds and caches a graph when it is not cached", async
     assert.equal(secondResponse.status, 200);
     assert.equal(buildCount, 1);
     assert.equal(getAnalysis("lazy-analysis").graph, graph);
+    assert.equal(getAnalysis("lazy-analysis").analysis, analysis);
   });
 });
 
@@ -208,7 +336,10 @@ test("POST /api/upload extracts a ZIP and its lazy graph can be fetched", async 
       assert.equal(result.status, "done");
       assert.equal(result.fileCount, 2);
       assert.deepEqual(result.files, ["README.md", "src/index.js"]);
-      assert.deepEqual(result.tree, { "README.md": null, src: { "index.js": null } });
+      assert.deepEqual(result.tree, {
+        "README.md": null,
+        src: { "index.js": null },
+      });
 
       const analysis = getAnalysis(result.id);
       extractedDir = analysis.dir;
@@ -220,7 +351,10 @@ test("POST /api/upload extracts a ZIP and its lazy graph can be fetched", async 
       assert.equal(graphResponse.status, 200);
       assert.equal(graph.repo, "demo.zip");
       assert.equal(graph.sha, result.id);
-      assert.deepEqual(graph.nodes.map(({ id }) => id), ["src/index.js"]);
+      assert.deepEqual(
+        graph.nodes.map(({ id }) => id),
+        ["src/index.js"],
+      );
     });
   } finally {
     if (extractedDir) await rm(extractedDir, { recursive: true, force: true });
@@ -244,13 +378,22 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
   const app = createApp();
 
   await withServer(app, async (baseUrl) => {
-    const missing = await fetch(`${baseUrl}/api/upload`, { method: "POST", body: new FormData() });
+    const missing = await fetch(`${baseUrl}/api/upload`, {
+      method: "POST",
+      body: new FormData(),
+    });
     assert.equal(missing.status, 400);
     assert.match((await missing.json()).error, /ZIP file is required/);
 
-    const nonZip = await uploadZip(baseUrl, "notes.txt", Buffer.from("not a zip"));
+    const nonZip = await uploadZip(
+      baseUrl,
+      "notes.txt",
+      Buffer.from("not a zip"),
+    );
     assert.equal(nonZip.status, 400);
-    assert.deepEqual(await nonZip.json(), { error: "Only .zip files are accepted." });
+    assert.deepEqual(await nonZip.json(), {
+      error: "Only .zip files are accepted.",
+    });
   });
 });
 

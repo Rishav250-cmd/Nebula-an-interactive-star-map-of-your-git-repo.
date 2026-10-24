@@ -29,7 +29,10 @@ export function searchFiles(files, query, limit = MAX_SEARCH_RESULTS) {
     else if (lowerName.startsWith(needle)) rank = 1;
     else if (lowerName.includes(needle)) rank = 2;
 
-    matches.push({ rank, result: { type: "file", name, path: filePath, line: 1 } });
+    matches.push({
+      rank,
+      result: { type: "file", name, path: filePath, line: 1 },
+    });
   }
 
   matches.sort(
@@ -39,5 +42,52 @@ export function searchFiles(files, query, limit = MAX_SEARCH_RESULTS) {
       a.result.path.localeCompare(b.result.path),
   );
 
+  return matches.slice(0, limit).map((match) => match.result);
+}
+
+/**
+ * Case-insensitive symbol search, ranked by name match and then path.
+ * Results use the same limit as file search and are intended to be appended
+ * after file results by the route.
+ */
+export function searchSymbols(symbols, query, limit = MAX_SEARCH_RESULTS) {
+  const needle = typeof query === "string" ? query.trim().toLowerCase() : "";
+  if (needle === "" || !Array.isArray(symbols)) return [];
+
+  const matches = [];
+  for (const symbol of symbols) {
+    const name = typeof symbol?.name === "string" ? symbol.name : "";
+    const lowerName = name.toLowerCase();
+    const lowerPath =
+      typeof symbol?.path === "string" ? symbol.path.toLowerCase() : "";
+    if (!lowerName.includes(needle) && !lowerPath.includes(needle)) continue;
+
+    const rank =
+      lowerName === needle
+        ? 0
+        : lowerName.startsWith(needle)
+          ? 1
+          : lowerName.includes(needle)
+            ? 2
+            : 3;
+    matches.push({
+      rank,
+      result: {
+        type: "symbol",
+        name,
+        path: symbol.path,
+        line: symbol.line,
+        kind: symbol.kind,
+      },
+    });
+  }
+
+  matches.sort(
+    (left, right) =>
+      left.rank - right.rank ||
+      left.result.path.localeCompare(right.result.path) ||
+      left.result.line - right.result.line ||
+      left.result.name.localeCompare(right.result.name),
+  );
   return matches.slice(0, limit).map((match) => match.result);
 }

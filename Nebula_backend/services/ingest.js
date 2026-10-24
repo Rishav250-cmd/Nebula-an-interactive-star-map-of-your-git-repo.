@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 
-const skippedDirectories = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
+const skippedDirectories = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  ".next",
+  "coverage",
+]);
 const skippedExtensions = new Set([
   ".png",
   ".jpg",
@@ -17,10 +24,14 @@ const skippedExtensions = new Set([
   ".woff2",
 ]);
 
-export async function cloneRepo(url) {
+export function cloneLocationForUrl(url) {
   const id = createHash("sha1").update(url).digest("hex").slice(0, 10);
   const dir = path.join(os.tmpdir(), "nebula", id);
+  return { id, dir };
+}
 
+export async function cloneRepo(url) {
+  const { id, dir } = cloneLocationForUrl(url);
   await rm(dir, { recursive: true, force: true });
   await mkdir(path.dirname(dir), { recursive: true });
   await simpleGit().clone(url, dir, ["--depth", "200"]);
@@ -91,10 +102,11 @@ export function shouldIgnoreEntry(relativePath, isDirectory = false) {
   const lowerName = filename.toLowerCase();
   const extension = path.extname(lowerName);
 
-  return !isDirectory && (
-    lowerName.endsWith(".lock") ||
-    lowerName.endsWith("-lock.json") ||
-    lowerName.endsWith(".min.js") ||
-    skippedExtensions.has(extension)
+  return (
+    !isDirectory &&
+    (lowerName.endsWith(".lock") ||
+      lowerName.endsWith("-lock.json") ||
+      lowerName.endsWith(".min.js") ||
+      skippedExtensions.has(extension))
   );
 }

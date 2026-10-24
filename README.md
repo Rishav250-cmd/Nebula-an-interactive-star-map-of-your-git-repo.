@@ -35,6 +35,48 @@ curl -fsS "$API/api/graph" \
   -d '{"url":"https://github.com/expressjs/express"}'
 ```
 
+Graph nodes include file complexity, function counts, and cycle flags. The
+`cycles` array lists circular import components; `inCycle` is set on their
+nodes and internal edges.
+
+### Function-level endpoints
+
+`GET /api/callgraph` returns resolved function calls for a code file. Depth 1
+is the default; depth 2 follows external callees one more level. The response
+is capped at 150 nodes and sets `truncated` when the cap is reached:
+
+```sh
+API=http://localhost:5001
+curl -fsS --get "$API/api/callgraph" \
+  --data-urlencode "id=$ANALYSIS_ID" \
+  --data-urlencode 'path=lib/response.js' \
+  --data-urlencode 'depth=2'
+```
+
+`GET /api/file` preserves its code fields and adds a `functions` array for
+JavaScript and TypeScript files. Non-code files return an empty array:
+
+```sh
+API=http://localhost:5001
+curl -fsS --get "$API/api/file" \
+  --data-urlencode "id=$ANALYSIS_ID" \
+  --data-urlencode 'path=lib/response.js'
+```
+
+`GET /api/search` returns up to 10 file matches followed by up to 10 function,
+method, or class matches:
+
+```sh
+API=http://localhost:5001
+curl -fsS --get "$API/api/search" \
+  --data-urlencode "id=$ANALYSIS_ID" \
+  --data-urlencode 'q=send'
+```
+
+GitHub analyses are cached on disk by repository and commit SHA. A repeat
+analysis of the same commit reuses the cached graph and function analysis.
+ZIP uploads are analyzed on request and are not cached.
+
 ### Upload a ZIP archive
 
 Upload a `.zip` file in the `file` form field (maximum 50 MB). The response contains the file list and tree; use its id to fetch the graph:
@@ -122,9 +164,9 @@ const analyze = useGraphStore((state) => state.analyze);
 const selectNode = useGraphStore((state) => state.selectNode);
 const focusNode = useGraphStore((state) => state.focusNode);
 
-void analyze('https://github.com/expressjs/express');
-selectNode('lib/express.js');
-focusNode('src/api.js');
+void analyze("https://github.com/expressjs/express");
+selectNode("lib/express.js");
+focusNode("src/api.js");
 ```
 
 `analyze(url)` runs the full repository analysis flow. `selectNode(id)` sets or

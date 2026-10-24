@@ -1,7 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
-import { parseImports } from "./parser.js";
+import { findCycles } from "./cycles.js";
+import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
@@ -10,18 +11,27 @@ const MAX_CODE_FILES = 2000;
 const BATCH_SIZE = 50;
 const TOKEN_PATTERN = /[A-Za-z_$][\w$]*|\d+|[^\s\w]/g;
 
-export async function buildGraph({ id, dir, files, repoUrl }) {
+export async function buildGraph({
+  id,
+  dir,
+  files,
+  repoUrl,
+  parseFileImpl = parseFile,
+}) {
   let sha;
   try {
     sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
   } catch (error) {
     // Archives have no Git metadata, so use their upload ID as a stable snapshot marker.
-    if (typeof repoUrl !== "string" || !repoUrl.toLowerCase().endsWith(".zip")) throw error;
+    if (typeof repoUrl !== "string" || !repoUrl.toLowerCase().endsWith(".zip"))
+      throw error;
     sha = id;
   }
   const sortedCodeFiles = [...new Set(Array.isArray(files) ? files : [])]
     .filter(
-      (file) => typeof file === "string" && CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()),
+      (file) =>
+        typeof file === "string" &&
+        CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()),
     )
     .sort((left, right) => left.localeCompare(right));
   const selectedFiles = sortedCodeFiles.slice(0, MAX_CODE_FILES);
@@ -36,16 +46,26 @@ export async function buildGraph({ id, dir, files, repoUrl }) {
 
   const aliases = await loadAliases(dir);
   const parsedFiles = [];
+  const analysis = { files: {}, aliases };
 
   for (let offset = 0; offset < selectedFiles.length; offset += BATCH_SIZE) {
     const batch = selectedFiles.slice(offset, offset + BATCH_SIZE);
-    const results = await Promise.all(batch.map((file) => readAndParseFile(dir, file)));
+    const results = await Promise.all(
+      batch.map((file) => readAndParseFile(dir, file, parseFileImpl)),
+    );
 
     for (const result of results) {
       if (result.warning) {
         warnings.push(result.warning);
       } else {
-        if (result.error) warnings.push({ file: result.path, message: result.error });
+        if (result.error)
+          warnings.push({ file: result.path, message: result.error });
+        analysis.files[result.path] = {
+          functions: result.functions,
+          calls: result.calls,
+          bindings: result.bindings,
+          complexity: result.complexity,
+        };
         parsedFiles.push(result);
       }
     }
@@ -56,7 +76,10 @@ export async function buildGraph({ id, dir, files, repoUrl }) {
     folder: filePath.includes("/") ? filePath.split("/")[0] : ".",
     loc: countNonEmptyLines(source),
     tokens: source.match(TOKEN_PATTERN)?.length ?? 0,
-    complexity: 0,
+    complexity: analysis.files[filePath].complexity,
+    functionCount: analysis.files[filePath].functions.filter(
+      (fn) => fn.kind !== "class",
+    ).length,
     churn: 0,
     healthScore: null,
     isGodFile: false,
@@ -71,8 +94,10 @@ export async function buildGraph({ id, dir, files, repoUrl }) {
 
   for (const { path: sourcePath, imports } of parsedFiles) {
     for (const { specifier } of imports) {
-      const targetPath = resolveImport(specifier, sourcePath, nodeIds, { aliases });
-      if (!targetPath || targetPath === sourcePath) continue;
+      const targetPath = resolveImport(specifier, sourcePath, nodeIds, {
+        aliases,
+      });
+      if (!targetPath) continue;
 
       const edgeKey = `${sourcePath}\0${targetPath}`;
       if (edgeKeys.has(edgeKey)) continue;
@@ -81,23 +106,43 @@ export async function buildGraph({ id, dir, files, repoUrl }) {
     }
   }
 
-  edges.sort((left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target));
+  edges.sort(
+    (left, right) =>
+      left.source.localeCompare(right.source) ||
+      left.target.localeCompare(right.target),
+  );
+
+  const cycles = findCycles(nodes, edges);
+  const cycleByFile = new Map();
+  cycles.forEach((cycle, cycleIndex) => {
+    for (const file of cycle) {
+      cycleByFile.set(file, cycleIndex);
+      nodesById.get(file).inCycle = true;
+    }
+  });
+
   for (const edge of edges) {
+    const sourceCycle = cycleByFile.get(edge.source);
+    const targetCycle = cycleByFile.get(edge.target);
+    edge.inCycle = sourceCycle !== undefined && sourceCycle === targetCycle;
     nodesById.get(edge.source).fanOut += 1;
     nodesById.get(edge.target).fanIn += 1;
   }
 
   return {
-    repo: repoUrl,
-    sha,
-    nodes,
-    edges,
-    cycles: [],
-    warnings,
+    graph: {
+      repo: repoUrl,
+      sha,
+      nodes,
+      edges,
+      cycles,
+      warnings,
+    },
+    analysis,
   };
 }
 
-async function readAndParseFile(dir, filePath) {
+async function readAndParseFile(dir, filePath, parseFileImpl) {
   const diskPath = path.join(dir, ...filePath.split("/"));
   const metadata = await stat(diskPath);
 
@@ -109,16 +154,21 @@ async function readAndParseFile(dir, filePath) {
   }
 
   const source = await readFile(diskPath, "utf8");
-  const parsed = parseImports(source, filePath);
+  const parsed = parseFileImpl(source, filePath);
 
   return {
     path: filePath,
     source,
     imports: parsed.imports,
+    bindings: parsed.bindings,
+    functions: parsed.functions,
+    calls: parsed.calls,
+    complexity: parsed.complexity,
     error: parsed.error,
   };
 }
 
 function countNonEmptyLines(source) {
-  return source.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
+  return source.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0)
+    .length;
 }
