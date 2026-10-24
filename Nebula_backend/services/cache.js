@@ -11,7 +11,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const ANALYSIS_VERSION = 1;
+export const ANALYSIS_VERSION = 2;
 export const MAX_CACHE_BYTES = 50 * 1024 * 1024;
 export const MAX_CACHE_FILES = 30;
 
