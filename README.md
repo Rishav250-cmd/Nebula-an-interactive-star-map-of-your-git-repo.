@@ -135,11 +135,38 @@ When a user submits a GitHub URL, the frontend calls `POST /api/analyze` with
 `{ "url": "..." }`, then calls `GET /api/graph/:id` with the returned analysis
 id. The graph response supplies the repository metadata, nodes, edges, cycles,
 and warnings. The code panel and search use `GET /api/file` and `GET /api/search`.
+The function view requests `GET /api/callgraph?id=...&path=...&depth=1|2` for
+the selected file. Function results are cached in memory while you move between
+files and hop depths.
 
 Append `?mock=1` to the frontend URL (for example,
 `http://localhost:5173/?mock=1`) to load the mock graph. It tries the backend's
 `/api/mock-graph` endpoint and falls back to the local fixture if that endpoint
 is unavailable.
+
+### File and function views
+
+Use the **File graph / Function graph** control above the map to switch between
+file imports and the selected file's functions and calls. Select a file first
+to load its function graph. The `1` and `2 hops` controls choose how many call
+levels to include; graphs over 150 functions show a truncation notice. Selecting
+a function scrolls the code panel to its source line, and selecting an external
+callee switches the function graph to that callee's file.
+
+The floating **Imports**, **Calls**, and **Cycles** buttons control edge
+visibility for the current view. Imports hides ordinary file import links,
+Calls hides function call links while keeping function nodes, and Cycles shows
+or hides circular-import links and their red styling. Controls that do not
+apply to the current view are disabled.
+
+The left panel's **Circular imports** list shows detected cycles. Select a cycle
+to focus and zoom to its files; select it again, click the file graph
+background, or press Escape to clear the focus. Select a file name in an open
+cycle to inspect that file.
+
+Search results are grouped into files and symbols when symbols are available.
+Choose a function or class result to focus its file and source line. In the
+function graph, the matching function is highlighted when it is present.
 
 ### Source structure
 
@@ -163,13 +190,31 @@ Other components can use these actions from `useGraphStore`:
 const analyze = useGraphStore((state) => state.analyze);
 const selectNode = useGraphStore((state) => state.selectNode);
 const focusNode = useGraphStore((state) => state.focusNode);
+const setViewMode = useGraphStore((state) => state.setViewMode);
+const loadCallGraph = useGraphStore((state) => state.loadCallGraph);
+const selectCycle = useGraphStore((state) => state.selectCycle);
+const selectFunction = useGraphStore((state) => state.selectFunction);
+const setFocusLine = useGraphStore((state) => state.setFocusLine);
+const toggleEdges = useGraphStore((state) => state.toggleEdges);
 
 void analyze("https://github.com/expressjs/express");
 selectNode("lib/express.js");
 focusNode("src/api.js");
+setViewMode("function");
+void loadCallGraph();
+selectCycle(0);
+selectFunction("src/api.js#handle:10");
+setFocusLine(10);
+toggleEdges("calls"); // "imports" and "cycles" are also supported
 ```
 
 `analyze(url)` runs the full repository analysis flow. `selectNode(id)` sets or
 clears the current selection; pass `null` to clear it. `focusNode(id)` selects
 the file and increments `focusRequest`, which tells the graph to center and zoom
 to it, including when the same file is focused again.
+`setViewMode(mode)` selects the file or function view. `loadCallGraph()` loads
+the current file using the selected depth and ignores stale responses.
+`selectCycle(index)` focuses a cycle (`null` clears only the cycle index), while
+`selectFunction(id)` and `setFocusLine(line)` set function and source-line
+focus. `toggleEdges(kind)` switches one of the `imports`, `calls`, or `cycles`
+visibility flags.
