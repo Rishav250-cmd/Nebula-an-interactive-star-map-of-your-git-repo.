@@ -82,7 +82,7 @@ type Edge = {
 
 `cycles` contains strongly connected import components with more than one file, plus self-importing files. Files inside each cycle are sorted alphabetically; cycles are sorted by descending size and then by their first file. A node has `inCycle: true` when it belongs to one of these components. An edge has `inCycle: true` only when both endpoints belong to the same component; all other edges have `false`.
 
-`complexity` is the file's cyclomatic complexity. `functionCount` counts functions and methods, excluding class declaration entries. `churn` is owned by Varish; `healthScore` and `isGodFile` are planned for Day 4. Their current values are `0`, `null`, and `false`, respectively.
+`complexity` is the file's cyclomatic complexity. `functionCount` counts functions and methods, excluding class declaration entries. `churn` is the number of commits that touched the file in the last 12 months (`git log --since=12.months.ago --name-only`). It is counted from the history present in the clone, which holds the most recent 200 commits, so very active repositories may show a lower number than the true 12-month count. ZIP uploads have no Git history, so their churn is `0`. `healthScore` and `isGodFile` are planned for Day 4 and are currently `null` and `false`.
 
 ### CallGraph
 

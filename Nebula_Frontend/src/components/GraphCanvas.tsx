@@ -12,6 +12,7 @@ import { ErrorState } from './ErrorState';
 import { GraphLegend } from './GraphLegend';
 import { FunctionGraphCanvas } from './FunctionGraphCanvas';
 import { useGraphStore } from '../store/useGraphStore';
+import { applyFilters } from '../lib/applyFilters';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 import { buildAdjacency } from '../lib/graphHighlight';
@@ -98,6 +99,7 @@ export function GraphCanvas() {
   const importsVisible = useGraphStore((state) => state.edgeToggles.imports);
   const callsVisible = useGraphStore((state) => state.edgeToggles.calls);
   const cyclesVisible = useGraphStore((state) => state.edgeToggles.cycles);
+  const filters = useGraphStore((state) => state.filters);
   const toggleEdges = useGraphStore((state) => state.toggleEdges);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
@@ -118,10 +120,13 @@ export function GraphCanvas() {
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
 
+  // The graph without the files hidden in the filter panel (same object when no filter is active).
+  const visibleGraph = useMemo(() => applyFilters(graph, filters), [graph, filters]);
+
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
       // ForceGraph mutates nodes and links with simulation coordinates.
-      const nodes = graph?.nodes
+      const nodes = visibleGraph?.nodes
         .map((node) => ({ ...node }))
         .sort((left, right) => (
           nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
@@ -129,10 +134,10 @@ export function GraphCanvas() {
       const nodeIds = new Set(nodes.map((node) => node.id));
       return {
         nodes,
-        links: uniqueLinks(graph?.edges ?? [], nodeIds),
+        links: uniqueLinks(visibleGraph?.edges ?? [], nodeIds),
       };
     },
-    [graph],
+    [visibleGraph],
   );
   const labelPriority = useMemo(
     () => new Map(graphData.nodes.map((node, index) => [node.id, index] as const)),
@@ -225,7 +230,7 @@ export function GraphCanvas() {
 
   useEffect(() => {
     hasFittedGraph.current = false;
-  }, [graph]);
+  }, [visibleGraph]);
 
   useEffect(() => {
     if (!hasFittedGraph.current || graphData.nodes.length === 0) return;
