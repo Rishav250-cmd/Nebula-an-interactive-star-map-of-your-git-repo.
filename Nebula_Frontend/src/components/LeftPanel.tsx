@@ -4,6 +4,7 @@ import { useGraphStore } from '../store/useGraphStore';
 import { ImportList } from './ImportList';
 import { SearchBar } from './SearchBar';
 import { CyclesPanel } from './CyclesPanel';
+import { FilterPanel } from './FilterPanel';
 
 export function LeftPanel() {
   const graph = useGraphStore((state) => state.graph);
@@ -23,6 +24,7 @@ export function LeftPanel() {
     <aside className="side-panel side-panel--left" aria-labelledby="explore-title">
       <h2 className="panel-title" id="explore-title">Explore</h2>
       <SearchBar />
+      <FilterPanel />
       <section className="dependencies-section" aria-labelledby="dependencies-title">
         <h3 className="panel-section-title" id="dependencies-title">Dependencies</h3>
         {selectedId ? (

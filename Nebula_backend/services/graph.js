@@ -18,6 +18,7 @@ export async function buildGraph({
   files,
   repoUrl,
   parseFileImpl = parseFile,
+  getChurnImpl = getChurn,
 }) {
   let sha;
   try {
@@ -45,6 +46,7 @@ export async function buildGraph({
     });
   }
 
+  const churnByFile = await getChurnImpl(dir);
   const aliases = await loadAliases(dir);
   const churnMap = await getChurn(dir);
   const parsedFiles = [];

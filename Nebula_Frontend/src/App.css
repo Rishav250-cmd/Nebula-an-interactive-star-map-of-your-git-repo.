@@ -1424,3 +1424,138 @@
     display: none;
   }
 }
+
+/* ---------- Filter panel (left sidebar) ---------- */
+.filter-panel {
+  margin-top: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.filter-summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-summary:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.filter-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #ddd6fe;
+  background: rgb(108 77 246 / 25%);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.filter-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.filter-reset {
+  padding: 3px 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.filter-reset:hover:not(:disabled) {
+  background: rgb(108 77 246 / 20%);
+}
+
+.filter-reset:disabled {
+  color: #68758a;
+  cursor: not-allowed;
+}
+
+.filter-reset:focus-visible {
+  outline: 2px solid #c4b5fd;
+}
+
+.filter-group {
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.filter-group-title {
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.filter-list {
+  max-height: 150px;
+  margin: 6px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.filter-option:hover {
+  background: rgb(148 163 184 / 8%);
+}
+
+.filter-option input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.filter-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.filter-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-option-count {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
