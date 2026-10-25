@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { analyzeRepo, clearCallGraphCache, fetchCallGraph, fetchGraph } from '../api/client';
+import { EMPTY_FILTERS, type GraphFilters } from '../lib/applyFilters';
 import type { CallGraph, GraphData, GraphWarning } from '../types/graph';
 
 export type GraphStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -35,6 +36,7 @@ type GraphStore = {
   focusLine: number | null;
   selectedCycleIndex: number | null;
   edgeToggles: { imports: boolean; calls: boolean; cycles: boolean };
+  filters: GraphFilters;
   setRepoUrl: (url: string) => void;
   setGraph: (graph: GraphData | null) => void;
   setAnalysisId: (id: string | null) => void;
@@ -51,8 +53,16 @@ type GraphStore = {
   selectCycle: (index: number | null) => void;
   clearFocus: () => void;
   toggleEdges: (kind: EdgeToggleKind) => void;
+  toggleFolderFilter: (folder: string) => void;
+  toggleExtensionFilter: (extension: string) => void;
+  resetFilters: () => void;
   analyze: (url: string) => Promise<void>;
 };
+
+/** Adds the value to the list, or removes it if it is already there. */
+function toggled(list: string[], value: string): string[] {
+  return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
 
 export const useGraphStore = create<GraphStore>()((set, get) => {
   let requestCounter = 0;
@@ -78,6 +88,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
       selectedCycleIndex: null,
       selectedFunctionId: null,
       focusLine: null,
+      filters: EMPTY_FILTERS,
     });
   };
 
@@ -105,6 +116,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     focusLine: null,
     selectedCycleIndex: null,
     edgeToggles: { imports: true, calls: true, cycles: true },
+    filters: EMPTY_FILTERS,
 
     setRepoUrl: (repoUrl) => set({ repoUrl }),
     setGraph: (graph) => set({ graph }),
@@ -237,6 +249,13 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     toggleEdges: (kind) => set((state) => ({
       edgeToggles: { ...state.edgeToggles, [kind]: !state.edgeToggles[kind] },
     })),
+    toggleFolderFilter: (folder) => set((state) => ({
+      filters: { ...state.filters, hiddenFolders: toggled(state.filters.hiddenFolders, folder) },
+    })),
+    toggleExtensionFilter: (extension) => set((state) => ({
+      filters: { ...state.filters, hiddenExtensions: toggled(state.filters.hiddenExtensions, extension) },
+    })),
+    resetFilters: () => set({ filters: EMPTY_FILTERS }),
     analyze: async (url) => {
       const currentRequest = ++requestCounter;
       const submittedUrl = url.trim();
