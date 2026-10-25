@@ -1,49 +1,48 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { promisify } from "node:util";
-import { countChurn } from "../utils/churn.js";
+import { simpleGit } from "simple-git";
 
-const execFile = promisify(execFileCallback);
+const GIT_TIMEOUT_MS = 30_000;
 
-/** How far back we look. The plan defines churn as "commits in the last 12 months". */
-export const CHURN_WINDOW = "12.months.ago";
-
-/**
- * Number of commits that touched each file in the last 12 months.
- *
- * Only commits that exist in the clone are counted (Nebula clones the most
- * recent 200 commits), and ZIP uploads have no history at all. In both cases
- * the answer is simply smaller, or empty, and never an error.
- *
- * @param {string} dir  folder of the cloned repository
- * @returns {Promise<Map<string, number>>}  file path -> commit count
- */
-export async function getChurn(dir) {
-  // ZIP uploads have no .git folder: skip git, and don't climb into a parent repo by accident.
-  if (!existsSync(path.join(dir, ".git"))) return new Map();
-
+export async function getChurn(dir, { months = 12 } = {}) {
   try {
-    const { stdout } = await execFile(
-      "git",
-      [
-        "-c",
-        "core.quotepath=false", // print accented / non-ASCII file names as they are
-        "log",
-        `--since=${CHURN_WINDOW}`,
-        "--name-only",
-        "--pretty=format:",
-      ],
-      {
-        cwd: dir,
-        timeout: 30_000,
-        maxBuffer: 64 * 1024 * 1024,
-        encoding: "utf8",
-      },
-    );
-    return countChurn(stdout);
-  } catch (error) {
-    console.warn("Could not compute churn:", error?.message ?? String(error));
+    const git = simpleGit({
+      baseDir: dir,
+      timeout: { block: GIT_TIMEOUT_MS },
+    });
+    const shallow = (await git.raw(["rev-parse", "--is-shallow-repository"]))
+      .trim()
+      .toLowerCase();
+    if (shallow === "true") return new Map();
+
+    const output = await git.raw([
+      "log",
+      `--since=${months}.months`,
+      "--name-only",
+      "--pretty=format:",
+    ]);
+    if (!output.trim()) return new Map();
+
+    const churn = new Map();
+    let commitPaths = new Set();
+
+    function countCommitPaths() {
+      for (const filePath of commitPaths) {
+        churn.set(filePath, (churn.get(filePath) ?? 0) + 1);
+      }
+      commitPaths = new Set();
+    }
+
+    for (const line of output.split(/\r?\n/)) {
+      const filePath = line.replace(/\r$/, "");
+      if (!filePath.trim()) {
+        countCommitPaths();
+      } else {
+        commitPaths.add(filePath);
+      }
+    }
+    countCommitPaths();
+
+    return churn;
+  } catch {
     return new Map();
   }
 }

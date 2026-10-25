@@ -48,8 +48,9 @@ export async function buildGraph({
 
   const churnByFile = await getChurnImpl(dir);
   const aliases = await loadAliases(dir);
+  const churnMap = await getChurn(dir);
   const parsedFiles = [];
-  const analysis = { files: {}, aliases };
+  const analysis = { files: {}, aliases, churn: churnMap };
 
   for (let offset = 0; offset < selectedFiles.length; offset += BATCH_SIZE) {
     const batch = selectedFiles.slice(offset, offset + BATCH_SIZE);
@@ -83,7 +84,7 @@ export async function buildGraph({
     functionCount: analysis.files[filePath].functions.filter(
       (fn) => fn.kind !== "class",
     ).length,
-    churn: churnByFile.get(filePath) ?? 0,
+    churn: churnMap.get(filePath) ?? 0,
     healthScore: null,
     isGodFile: false,
     inCycle: false,
