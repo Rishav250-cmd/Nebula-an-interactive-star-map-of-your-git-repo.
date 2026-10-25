@@ -38,7 +38,7 @@
   height: 100%;
   object-fit: cover;
   filter: blur(28px) brightness(0.55) saturate(1.1);
-  transform: scale(1.15) translateZ(0);
+  transform: scale(1.15);
 }
 
 .splash-background-tint {
@@ -58,10 +58,10 @@
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
-  mask-image: radial-gradient(ellipse at center, #000 58%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse at center, #000 58%, transparent 100%);
-  mask-size: 140% 140%;
-  -webkit-mask-size: 140% 140%;
+  mask-image: radial-gradient(ellipse farthest-side at center, #000 58%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse farthest-side at center, #000 58%, transparent 100%);
+  mask-size: 100% 100%;
+  -webkit-mask-size: 100% 100%;
   mask-position: center;
   -webkit-mask-position: center;
   transform: var(--splash-foreground-position);
@@ -207,18 +207,32 @@
 
 @media (min-aspect-ratio: 2.2/1) {
   .splash-foreground {
-    width: 100vw;
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    width: auto;
     height: 100vh;
     height: 100dvh;
+    --splash-foreground-position: translate(-50%, -50%);
     object-fit: contain;
   }
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
   .splash-foreground {
-    width: 100vw;
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    width: auto;
     height: 100vh;
     height: 100dvh;
+    --splash-foreground-position: translate(-50%, -50%);
     object-fit: contain;
+  }
+}
+
+@media (min-aspect-ratio: 1.65/1) and (max-aspect-ratio: 2.2/1) and (min-height: 501px) {
+  .splash-loader-track {
+    bottom: max(3vh, calc(env(safe-area-inset-bottom, 0px) + 20px));
   }
 }
