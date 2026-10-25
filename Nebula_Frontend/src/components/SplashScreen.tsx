@@ -116,7 +116,13 @@ export function SplashScreen({ durationMs = 2000, onDone }: SplashScreenProps) {
       <div
         className={overlayClasses}
         onTransitionEnd={(event) => {
-          if (event.propertyName === 'opacity' && phase === 'fading') finish();
+          if (
+            event.target === event.currentTarget
+            && event.propertyName === 'opacity'
+            && phase === 'fading'
+          ) {
+            finish();
+          }
         }}
         role="status"
         aria-live="polite"
@@ -124,10 +130,12 @@ export function SplashScreen({ durationMs = 2000, onDone }: SplashScreenProps) {
         <span className="splash-visually-hidden">Loading Nebula</span>
         <div className="splash-content">
           {imageFailed ? (
-            <span className="splash-fallback-title">Nebula</span>
+            <span className="splash-fallback-title splash-fallback-title--entering">
+              Nebula
+            </span>
           ) : (
             <img
-              className="splash-logo"
+              className={`splash-logo ${phase === 'waiting' ? '' : 'splash-logo--entering'}`}
               src={splashImage}
               alt="Nebula, mapping the constellations of your codebase"
               loading="eager"
