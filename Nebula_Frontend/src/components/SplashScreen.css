@@ -105,14 +105,14 @@
 
 .splash-loader-track {
   position: absolute;
-  top: 50%;
+  bottom: max(7vh, calc(env(safe-area-inset-bottom, 0px) + 28px));
   left: 50%;
-  width: min(280px, 70vw);
+  width: min(320px, 70vw);
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
   background: rgb(108 77 246 / 25%);
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
 }
 
 .splash-loader-fill {
