@@ -40,10 +40,22 @@ export function TopBar({ onAnalyze }: TopBarProps) {
   return (
     <header className="topbar">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">✦</span>
+        <span className="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" focusable="false">
+            <path className="brand-constellation-line" d="M24 5.5 39 14v20L24 42.5 9 34V14L24 5.5Z" />
+            <path className="brand-constellation-line" d="m9 14 15 8.5L39 14M9 34l15-11.5L39 34M24 5.5v17" />
+            <circle className="brand-star brand-star--teal" cx="24" cy="5.5" r="2.8" />
+            <circle className="brand-star brand-star--violet" cx="39" cy="14" r="2.5" />
+            <circle className="brand-star brand-star--teal" cx="39" cy="34" r="2.8" />
+            <circle className="brand-star brand-star--violet" cx="24" cy="42.5" r="2.5" />
+            <circle className="brand-star brand-star--teal" cx="9" cy="34" r="2.8" />
+            <circle className="brand-star brand-star--violet" cx="9" cy="14" r="2.5" />
+            <path className="brand-constellation-core" d="m24 15 2.2 6.8 6.8 2.2-6.8 2.2-2.2 6.8-2.2-6.8L15 24l6.8-2.2L24 15Z" />
+          </svg>
+        </span>
         <div>
           <div className="brand-name">Nebula</div>
-          <div className="brand-tagline">An interactive star map of git</div>
+          <div className="brand-tagline">Mapping the constellations of your codebase.</div>
         </div>
       </div>
       <form

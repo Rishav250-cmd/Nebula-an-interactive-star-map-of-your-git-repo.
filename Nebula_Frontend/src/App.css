@@ -31,7 +31,7 @@
 
 .brand {
   display: flex;
-  flex: 0 0 230px;
+  flex: 0 1 310px;
   min-width: 0;
   align-items: center;
   gap: 12px;
@@ -39,27 +39,56 @@
 
 .brand-mark {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
   place-items: center;
-  border: 1px solid rgb(108 77 246 / 38%);
-  border-radius: 12px;
-  color: #c4b5fd;
-  background: rgb(108 77 246 / 14%);
-  font-size: 21px;
+  border: 1px solid #2d355a;
+  border-radius: 16px;
+  background: #0b0e1d;
+}
+
+.brand-mark svg {
+  width: 37px;
+  height: 37px;
+  overflow: visible;
+}
+
+.brand-constellation-line {
+  fill: none;
+  stroke: #6c4df6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.brand-star--teal {
+  fill: #54d9d0;
+}
+
+.brand-star--violet {
+  fill: #b79cff;
+}
+
+.brand-constellation-core {
+  fill: #a995ff;
 }
 
 .brand-name {
-  color: var(--text);
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  color: #c9cce2;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  line-height: 1.05;
 }
 
 .brand-tagline {
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--text-muted);
   font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .repo-form {
@@ -1382,7 +1411,7 @@
 
 @media (max-width: 1000px) {
   .brand {
-    flex-basis: 200px;
+    flex-basis: 265px;
   }
 
   .workspace {
@@ -1398,11 +1427,7 @@
   }
 
   .brand {
-    flex: 1 1 auto;
-  }
-
-  .brand-tagline {
-    display: none;
+    flex: 1 1 100%;
   }
 
   .repo-form {

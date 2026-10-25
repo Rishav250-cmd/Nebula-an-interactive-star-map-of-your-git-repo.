@@ -100,12 +100,6 @@ export function SplashScreen({ durationMs = 2000, onDone }: SplashScreenProps) {
   ]
     .filter(Boolean)
     .join(' ');
-  const foregroundImageClasses = [
-    'splash-foreground',
-    phase === 'waiting' ? '' : 'splash-foreground--entering',
-  ]
-    .filter(Boolean)
-    .join(' ');
   const loaderFillClasses = [
     'splash-loader-fill',
     phase === 'waiting' ? '' : 'splash-loader-fill--running',
@@ -133,40 +127,26 @@ export function SplashScreen({ durationMs = 2000, onDone }: SplashScreenProps) {
         role="status"
         aria-live="polite"
       >
-        <div className="splash-background" aria-hidden="true">
-          {!imageFailed && (
+        <span className="splash-visually-hidden">Loading Nebula</span>
+        <div className="splash-content">
+          {imageFailed ? (
+            <span className="splash-fallback-title splash-fallback-title--entering">
+              Nebula
+            </span>
+          ) : (
             <img
-              className="splash-background-image"
+              className={`splash-logo ${phase === 'waiting' ? '' : 'splash-logo--entering'}`}
               src={splashImage}
-              alt=""
+              alt="Nebula, mapping the constellations of your codebase"
               loading="eager"
               fetchPriority="high"
-              draggable={false}
+              onLoad={startLoading}
+              onError={() => {
+                setImageFailed(true);
+                startLoading();
+              }}
             />
           )}
-          <div className="splash-background-tint" />
-        </div>
-        {imageFailed ? (
-          <span className="splash-fallback-title splash-fallback-title--entering">
-            Nebula
-          </span>
-        ) : (
-          <img
-            className={foregroundImageClasses}
-            src={splashImage}
-            alt="Nebula, mapping the constellations of your codebase"
-            loading="eager"
-            fetchPriority="high"
-            draggable={false}
-            onLoad={startLoading}
-            onError={() => {
-              setImageFailed(true);
-              startLoading();
-            }}
-          />
-        )}
-        <div className="splash-content">
-          <span className="splash-visually-hidden">Loading Nebula</span>
           <div
             className="splash-loader-track"
             style={loaderStyle}
