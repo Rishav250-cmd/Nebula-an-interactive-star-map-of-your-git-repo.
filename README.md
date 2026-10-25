@@ -114,10 +114,12 @@ npm run dev
 
 Vite prints the frontend URL, usually `http://localhost:5173`.
 
-On the first visit in a browser session, the Nebula splash screen appears with a
-2-second loader before fading into the app. Completion is remembered in
-`sessionStorage` under `nebula_splash_seen`. Add `?nosplash=1` to the URL to skip
-the splash for demos and tests.
+On the first visit in a browser session, a full-screen Nebula splash appears
+with the sharp logo feathered over a blurred backdrop. It adapts to portrait,
+landscape, ultrawide, and phone-landscape screens, then fades into the app after
+its 2-second loader. Completion is remembered in `sessionStorage` under
+`nebula_splash_seen`. Add `?nosplash=1` to the URL to skip the splash for demos
+and tests.
 
 ### API configuration and analyze flow
 
