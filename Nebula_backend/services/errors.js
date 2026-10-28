@@ -22,9 +22,9 @@ const ERROR_CATALOG = Object.freeze({
 });
 
 export class NebulaError extends Error {
-  constructor(code, { message, hint, details = null, retryAfter } = {}) {
+  constructor(code, { message, hint, details = null, retryAfter, cause } = {}) {
     const [status, defaultMessage, defaultHint] = ERROR_CATALOG[code] ?? ERROR_CATALOG.INTERNAL;
-    super(message ?? defaultMessage);
+    super(message ?? defaultMessage, cause === undefined ? undefined : { cause });
     this.name = "NebulaError";
     this.code = ERROR_CATALOG[code] ? code : "INTERNAL";
     this.status = status;
@@ -63,7 +63,12 @@ export function installProcessErrorHandlers({ logger = console.error } = {}) {
 }
 
 function redactSecrets(error) {
-  const text = error instanceof Error ? error.stack ?? error.message : String(error);
+  const stackFor = (value, depth = 0) => {
+    if (!(value instanceof Error) || depth > 4) return String(value ?? "");
+    const own = value.stack ?? `${value.name}: ${value.message}`;
+    return value.cause === undefined ? own : `${own}\nCaused by: ${stackFor(value.cause, depth + 1)}`;
+  };
+  const text = stackFor(error);
   const token = process.env.GITHUB_TOKEN;
   let safe = text.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]");
   if (token) safe = safe.split(token).join("[REDACTED]");

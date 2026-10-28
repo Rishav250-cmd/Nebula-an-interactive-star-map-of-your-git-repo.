@@ -10,6 +10,7 @@ export function storeAnalysis({
   url,
   graph = null,
   analysis: graphAnalysis = null,
+  cloneInfo = null,
   job = null,
 }) {
   const entry = analyses.get(id) ?? {};
@@ -19,6 +20,7 @@ export function storeAnalysis({
     url,
     graph: graph ?? null,
     analysis: graphAnalysis ?? null,
+    cloneInfo: cloneInfo ?? entry.cloneInfo ?? null,
     onboardingCache: null,
     job: job ??
       entry.job ?? {

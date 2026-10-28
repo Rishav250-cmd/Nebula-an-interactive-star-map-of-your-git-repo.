@@ -1,18 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { shouldIgnoreEntry } from "./ingest.js";
 import { NebulaError } from "./errors.js";
+import { config } from "./config.js";
 
-const MAX_ENTRIES = 20_000;
-const MAX_UNCOMPRESSED_SIZE = 200 * 1024 * 1024;
+const MAX_ENTRIES = config.MAX_ARCHIVE_ENTRIES;
+const MAX_UNCOMPRESSED_SIZE = config.MAX_UNCOMPRESSED_MB * 1024 * 1024;
 const ZIP_SYMLINK_MODE = 0o120000;
 
 export class ZipArchiveError extends NebulaError {
-  constructor(message, statusCode = 400) {
-    super(statusCode === 413 ? "UPLOAD_TOO_LARGE" : "BAD_UPLOAD", { message });
+  constructor(message, statusCode = 400, cause) {
+    super(statusCode === 413 ? "UPLOAD_TOO_LARGE" : "BAD_UPLOAD", { message, cause });
     this.name = "ZipArchiveError";
     this.statusCode = statusCode;
   }
@@ -47,7 +47,7 @@ export async function extractZipArchive(buffer) {
   });
 
   const wrapper = findSingleTopLevelFolder(paths, entries);
-  const parent = path.join(os.tmpdir(), "nebula");
+  const parent = config.REPO_DIR;
   await mkdir(parent, { recursive: true });
 
   let id;
@@ -95,7 +95,7 @@ export async function extractZipArchive(buffer) {
   } catch (error) {
     await rm(targetDir, { recursive: true, force: true });
     if (error instanceof ZipArchiveError) throw error;
-    throw new ZipArchiveError("Could not safely extract ZIP archive.");
+    throw new ZipArchiveError("Could not safely extract ZIP archive.", 400, error);
   }
 }
 

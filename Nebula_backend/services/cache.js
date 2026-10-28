@@ -9,14 +9,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { config } from "./config.js";
 
 export const ANALYSIS_VERSION = 4;
-export const MAX_CACHE_BYTES = 50 * 1024 * 1024;
-export const MAX_CACHE_FILES = 30;
+export const MAX_CACHE_BYTES = config.MAX_CACHE_MB * 1024 * 1024;
+export const MAX_CACHE_FILES = config.MAX_CACHE_FILES;
 
-const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
-export const ANALYSIS_CACHE_DIR = path.resolve(moduleDirectory, "../.cache");
+export const ANALYSIS_CACHE_DIR = config.CACHE_DIR;
 
 export function getAnalysisCachePath(
   repo,

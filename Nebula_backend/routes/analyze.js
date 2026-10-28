@@ -22,16 +22,16 @@ import {
   storeAnalysis,
   updateAnalysisJob,
 } from "../services/store.js";
-import { GraphError } from "../src/graph.js";
 import { NebulaError } from "../services/errors.js";
+import { config } from "../services/config.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
 const uploadZip = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 0 },
+  limits: { fileSize: config.MAX_UPLOAD_MB * 1024 * 1024, files: 1, fields: 0 },
 });
-const JOB_TIMEOUT_MS = 3 * 60 * 1000;
+const JOB_TIMEOUT_MS = config.JOB_TIMEOUT_MS;
 const PROGRESS_POLL_MS = 300;
 const PROGRESS_HEARTBEAT_MS = 15 * 1000;
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
@@ -257,7 +257,7 @@ export function createAnalyzeRouter({
       if (extracted?.dir)
         await rm(extracted.dir, { recursive: true, force: true });
       if (error instanceof NebulaError) throw error;
-      throw new NebulaError("BAD_UPLOAD");
+      throw new NebulaError("BAD_UPLOAD", { cause: error });
     }
   });
 
@@ -431,6 +431,10 @@ export function createAnalyzeRouter({
       id: clonedRepository.id,
       dir: clonedRepository.dir,
       url,
+      cloneInfo: {
+        defaultBranch: clonedRepository.defaultBranch ?? null,
+        shallow: clonedRepository.shallow === true,
+      },
       graph: null,
       analysis: null,
     };
@@ -498,7 +502,7 @@ export function createAnalyzeRouter({
       const total = Math.min(
         files.filter((file) => /\.(?:js|jsx|ts|tsx|mjs|cjs)$/i.test(file))
           .length,
-        2000,
+        config.MAX_CODE_FILES,
       );
       onState?.({ status: "parsing", progress: { done: 0, total } });
       const buildOptions = {
@@ -548,24 +552,27 @@ function isValidRepositoryUrl(url) {
 
 function pipelineError(error) {
   if (error instanceof NebulaError) return error;
-  if (error instanceof GraphError)
-    return new NebulaError("INVALID_URL", { message: error.message });
+  if (error instanceof RepositoryPipelineError && error.cause instanceof NebulaError)
+    return error.cause;
   if (error instanceof JobTimeoutError) return new NebulaError("JOB_TIMEOUT");
   if (error instanceof RepositoryPipelineError && error.stage === "clone") {
     return new NebulaError("CLONE_FAILED", {
       message: "Could not clone repo (private or not found?)",
+      cause: error.cause,
     });
   }
   if (error instanceof RepositoryPipelineError && error.stage === "build") {
-    return new NebulaError("INTERNAL", { message: "Could not build repository graph." });
+    return new NebulaError("INTERNAL", { message: "Could not build repository graph.", cause: error.cause });
   }
-  return new NebulaError("INTERNAL");
+  return new NebulaError("INTERNAL", { cause: error });
 }
 
 function getJobErrorMessage(error) {
   if (error instanceof JobTimeoutError)
     return "Analysis job exceeded the 3 minute timeout.";
   if (error instanceof NebulaError) return error.message;
+  if (error instanceof RepositoryPipelineError && error.cause instanceof NebulaError)
+    return error.cause.message;
   if (error instanceof RepositoryPipelineError && error.stage === "clone")
     return "Could not clone repository.";
   if (error instanceof RepositoryPipelineError && error.stage === "build")

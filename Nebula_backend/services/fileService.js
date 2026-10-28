@@ -4,9 +4,10 @@ import { shouldIgnore } from "../ignore.js";
 import { countLines } from "../utils/countLines.js";
 import { detectLanguage } from "../utils/detectLanguage.js";
 import { NebulaError } from "./errors.js";
+import { config } from "./config.js";
 
 // Files bigger than this are not sent to the code panel (the graph skips them too).
-export const MAX_FILE_BYTES = 1024 * 1024;
+export const MAX_FILE_BYTES = config.MAX_FILE_BYTES;
 
 export class FileError extends NebulaError {
   constructor(statusCode, message) {

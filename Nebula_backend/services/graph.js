@@ -6,11 +6,13 @@ import { buildReverseIndex, computeBlast } from "./blast.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
+import { config } from "./config.js";
+import { NebulaError } from "./errors.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
-const MAX_FILE_SIZE = 1024 * 1024;
-const MAX_CODE_FILES = 2000;
-const BATCH_SIZE = 50;
+const MAX_FILE_SIZE = config.MAX_FILE_BYTES;
+const MAX_CODE_FILES = config.MAX_CODE_FILES;
+const BATCH_SIZE = config.PARSE_BATCH_SIZE;
 const TOKEN_PATTERN = /[A-Za-z_$][\w$]*|\d+|[^\s\w]/g;
 
 export async function buildGraph({
@@ -38,8 +40,23 @@ export async function buildGraph({
         CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()),
     )
     .sort((left, right) => left.localeCompare(right));
+  if (sortedCodeFiles.length === 0) throw new NebulaError("NO_SUPPORTED_FILES");
   const selectedFiles = sortedCodeFiles.slice(0, MAX_CODE_FILES);
   const warnings = [];
+
+  let totalSourceBytes = 0;
+  for (const file of selectedFiles) {
+    const metadata = await stat(path.join(dir, ...file.split("/")));
+    if (metadata.size <= MAX_FILE_SIZE) totalSourceBytes += metadata.size;
+    if (totalSourceBytes > config.MAX_SOURCE_MB * 1024 * 1024) {
+      throw new NebulaError("REPO_TOO_LARGE", {
+        details: {
+          sourceMb: Math.round((totalSourceBytes / (1024 * 1024)) * 10) / 10,
+          limitMb: config.MAX_SOURCE_MB,
+        },
+      });
+    }
+  }
 
   onProgress?.({
     status: "parsing",
