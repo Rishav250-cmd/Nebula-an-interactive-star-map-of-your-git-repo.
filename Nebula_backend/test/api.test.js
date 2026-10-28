@@ -79,6 +79,7 @@ test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it",
       assert.deepEqual(graph.cycles, []);
       assert.deepEqual(graph.warnings, []);
       assert.deepEqual(Object.keys(graph.nodes[0]).sort(), [
+        "blastRadius",
         "churn",
         "complexity",
         "fanIn",

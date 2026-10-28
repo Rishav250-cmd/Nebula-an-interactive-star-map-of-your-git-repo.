@@ -25,9 +25,13 @@ const skippedExtensions = new Set([
 ]);
 
 export function cloneLocationForUrl(url) {
-  const id = createHash("sha1").update(url).digest("hex").slice(0, 10);
+  const id = repoIdFor(url);
   const dir = path.join(os.tmpdir(), "nebula", id);
   return { id, dir };
+}
+
+export function repoIdFor(url) {
+  return createHash("sha1").update(url).digest("hex").slice(0, 10);
 }
 
 export async function cloneRepo(url) {
