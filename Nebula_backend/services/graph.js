@@ -8,6 +8,7 @@ import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
 import { config } from "./config.js";
 import { NebulaError } from "./errors.js";
+import { elapsedMs, logTiming, startTimer } from "./timing.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
 const TIER_TWO_NAMES = new Set([
@@ -29,6 +30,7 @@ export async function buildGraph({
   parseFileImpl = parseFile,
   getChurnImpl = getChurn,
   onProgress,
+  onTiming,
 }) {
   const startedAt = Date.now();
   const snapshot = await getHistory(dir, repoUrl, id);
@@ -86,13 +88,16 @@ export async function buildGraph({
 
   onProgress?.({ status: "parsing", progress: { done: 0, total: selectedFiles.length } });
 
+  const churnStartedAt = startTimer();
   const churnMap = await getChurnImpl(dir);
+  reportTiming("churn", elapsedMs(churnStartedAt));
   const aliases = await loadAliases(dir);
   const parsedFiles = [];
   const analysis = { files: {}, aliases, churn: churnMap };
   let processedCount = 0;
   let memoryLimited = false;
 
+  const parseStartedAt = startTimer();
   for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
     const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
     const results = await Promise.all(
@@ -136,6 +141,7 @@ export async function buildGraph({
       break;
     }
   }
+  reportTiming("parse", elapsedMs(parseStartedAt), { files: processedCount });
 
   if (memoryLimited) truncatedReason = "memory";
   onProgress?.({
@@ -143,6 +149,7 @@ export async function buildGraph({
     progress: { done: processedCount, total: selectedFiles.length },
   });
 
+  const complexityStartedAt = startTimer();
   const nodes = parsedFiles.map(({ path: filePath, source }) => ({
     id: filePath,
     folder: filePath.includes("/") ? filePath.split("/")[0] : ".",
@@ -159,11 +166,13 @@ export async function buildGraph({
     fanIn: 0,
     fanOut: 0,
   }));
+  reportTiming("complexity", elapsedMs(complexityStartedAt), { files: nodes.length });
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const nodeIds = new Set(nodesById.keys());
   const edgeKeys = new Set();
   const edges = [];
 
+  const importsStartedAt = startTimer();
   for (const { path: sourcePath, imports } of parsedFiles) {
     for (const { specifier } of imports) {
       const targetPath = resolveImport(specifier, sourcePath, nodeIds, { aliases });
@@ -178,6 +187,8 @@ export async function buildGraph({
   edges.sort(
     (left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target),
   );
+  reportTiming("import resolution", elapsedMs(importsStartedAt), { edges: edges.length });
+  const cyclesStartedAt = startTimer();
   const cycles = findCycles(nodes, edges);
   const cycleByFile = new Map();
   cycles.forEach((cycle, cycleIndex) => {
@@ -193,6 +204,7 @@ export async function buildGraph({
     nodesById.get(edge.source).fanOut += 1;
     nodesById.get(edge.target).fanIn += 1;
   }
+  reportTiming("cycles", elapsedMs(cyclesStartedAt), { cycles: cycles.length });
 
   const reverseIndex = buildReverseIndex(edges);
   for (const node of nodes) {
@@ -221,6 +233,11 @@ export async function buildGraph({
     stale: false,
     analysisMs: Date.now() - startedAt,
   };
+
+  function reportTiming(stage, durationMs, extra) {
+    if (onTiming) onTiming(stage, durationMs, extra);
+    else logTiming(id, stage, durationMs, extra);
+  }
 
   return {
     graph: { repo: repoUrl, sha: snapshot.sha, nodes, edges, cycles, warnings, meta },

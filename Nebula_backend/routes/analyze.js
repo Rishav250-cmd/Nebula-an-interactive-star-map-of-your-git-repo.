@@ -27,6 +27,7 @@ import {
 import { NebulaError } from "../services/errors.js";
 import { config } from "../services/config.js";
 import { createJobLimiter } from "../services/limiter.js";
+import { elapsedMs, logTiming, startTimer, timingEnabled } from "../services/timing.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
@@ -77,6 +78,7 @@ export function createAnalyzeRouter({
 
       const reservation = jobLimiter.reserve();
       const initialStatus = reservation.queued ? "queued" : "cloning";
+      const timing = beginRequestTiming(response, id, { deferred: true });
 
       const { dir } = cloneLocationForUrlImpl(url);
       storeAnalysisImpl({
@@ -91,11 +93,12 @@ export function createAnalyzeRouter({
           progress: { done: 0, total: 0 },
         },
       });
-      const job = runAsyncJob(id, url, reservation);
+      const job = runAsyncJob(id, url, reservation, timing);
       runningJobs.set(id, job);
       return response.status(202).json({ id, status: initialStatus });
     }
 
+    const timing = beginRequestTiming(response, repoIdFor(url));
     try {
       const existing = getAnalysisImpl(repoIdFor(url));
       if (existing?.graph && existing.job?.status === "ready") {
@@ -103,7 +106,7 @@ export function createAnalyzeRouter({
       }
       const cacheProbe = await probeRepositoryCache(url);
       const repository = cacheProbe.repository ?? await jobLimiter.run(
-        () => cloneAndBuild(url, { cacheProbe }),
+        () => cloneAndBuild(url, { cacheProbe, timing }),
       );
       storeAnalysisImpl(repository);
       return response.status(200).json({ id: repository.id, status: "ready" });
@@ -187,7 +190,7 @@ export function createAnalyzeRouter({
     sendState();
   });
 
-  async function runAsyncJob(id, url, reservation) {
+  async function runAsyncJob(id, url, reservation, timing) {
     let active = true;
     let timeoutId;
     const update = (state) => {
@@ -208,7 +211,7 @@ export function createAnalyzeRouter({
             timeoutId = setTimeout(() => reject(new JobTimeoutError()), JOB_TIMEOUT_MS);
           });
           return Promise.race([
-            cloneAndBuild(url, { onState: update, cacheProbe }),
+            cloneAndBuild(url, { onState: update, cacheProbe, timing }),
             timeout,
           ]);
         }, { onQueued: () => update({ status: "queued" }) });
@@ -236,6 +239,7 @@ export function createAnalyzeRouter({
       clearTimeout(timeoutId);
       active = false;
       runningJobs.delete(id);
+      finishRequestTiming(timing, id);
     }
   }
 
@@ -490,7 +494,7 @@ export function createAnalyzeRouter({
     return { remoteSha, remoteCache, repository: null };
   }
 
-  async function cloneAndBuild(url, { onState, cacheProbe } = {}) {
+  async function cloneAndBuild(url, { onState, cacheProbe, timing } = {}) {
     const probe = cacheProbe ?? await probeRepositoryCache(url);
     if (probe.repository) {
       onState?.({ status: "ready", progress: { done: 0, total: 0 } });
@@ -499,11 +503,14 @@ export function createAnalyzeRouter({
     const { remoteSha, remoteCache } = probe;
 
     let clonedRepository;
+    const cloneStartedAt = startTimer();
     try {
       clonedRepository = await cloneRepoImpl(url);
     } catch (error) {
+      reportTiming(timing, repoIdFor(url), "clone", elapsedMs(cloneStartedAt));
       throw new RepositoryPipelineError("clone", error);
     }
+    reportTiming(timing, repoIdFor(url), "clone", elapsedMs(cloneStartedAt));
 
     const repository = {
       id: clonedRepository.id,
@@ -541,12 +548,13 @@ export function createAnalyzeRouter({
       return repository;
     }
 
-    const built = await buildGraphForRepository(repository, onState);
+    const built = await buildGraphForRepository(repository, onState, timing);
     repository.graph = built.graph;
     repository.analysis = built.analysis;
     const builtSha = clonedSha ?? built.graph?.sha;
     repository.sha = builtSha ?? null;
     if (builtSha) {
+      const cacheWriteStartedAt = startTimer();
       try {
         await saveAnalysisCacheImpl({
           repo: url,
@@ -560,6 +568,7 @@ export function createAnalyzeRouter({
           error?.message ?? String(error),
         );
       }
+      reportTiming(timing, repository.id, "cache write", elapsedMs(cacheWriteStartedAt));
     }
     return repository;
   }
@@ -576,10 +585,12 @@ export function createAnalyzeRouter({
     }
   }
 
-  async function buildGraphForRepository(repository, onState) {
+  async function buildGraphForRepository(repository, onState, timing) {
     try {
       onState?.({ status: "listing", progress: { done: 0, total: 0 } });
+      const fileWalkStartedAt = startTimer();
       const files = await listFilesImpl(repository.dir);
+      reportTiming(timing, repository.id, "file walk", elapsedMs(fileWalkStartedAt), { files: files.length });
       const total = Math.min(
         files.filter((file) => /\.(?:js|jsx|ts|tsx|mjs|cjs)$/i.test(file))
           .length,
@@ -594,6 +605,10 @@ export function createAnalyzeRouter({
       };
       if (onState) buildOptions.onProgress = onState;
       if (parseFileImpl) buildOptions.parseFileImpl = parseFileImpl;
+      if (timing) {
+        buildOptions.onTiming = (stage, durationMs, extra) =>
+          reportTiming(timing, repository.id, stage, durationMs, extra);
+      }
       const built = await buildGraphImpl(buildOptions);
       onState?.({ status: "graph", progress: { done: total, total } });
       return built;
@@ -612,6 +627,36 @@ export function createAnalyzeRouter({
   }
 
   return router;
+}
+
+function reportTiming(timing, repoId, stage, durationMs, extra) {
+  if (!timingEnabled()) return;
+  logTiming(repoId, stage, durationMs, extra);
+  if (timing) timing.stages[stage] = (timing.stages[stage] ?? 0) + durationMs;
+}
+
+function beginRequestTiming(response, repoId, { deferred = false } = {}) {
+  if (!timingEnabled()) return null;
+  const timing = { startedAt: startTimer(), stages: {}, peakRss: process.memoryUsage().rss };
+  const sampler = setInterval(() => {
+    timing.peakRss = Math.max(timing.peakRss, process.memoryUsage().rss);
+  }, 20);
+  sampler.unref?.();
+  timing.sampler = sampler;
+  timing.finish = () => finishRequestTiming(timing, repoId, sampler);
+  if (!deferred) response.once("finish", timing.finish);
+  return timing;
+}
+
+function finishRequestTiming(timing, repoId, sampler = null) {
+  if (!timing || timing.finished) return;
+  timing.finished = true;
+  clearInterval(sampler ?? timing.sampler);
+  timing.peakRss = Math.max(timing.peakRss, process.memoryUsage().rss);
+  reportTiming(timing, repoId, "total", elapsedMs(timing.startedAt), {
+    peakRssMb: Number((timing.peakRss / 1024 / 1024).toFixed(1)),
+    stages: timing.stages,
+  });
 }
 
 function runZipUpload(request, response, next) {
