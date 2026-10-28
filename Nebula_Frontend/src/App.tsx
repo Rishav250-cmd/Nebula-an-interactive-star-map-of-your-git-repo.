@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent,
@@ -14,7 +14,11 @@ import { SplashScreen } from './components/SplashScreen';
 import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
 
-const RightPanel = lazy(() => import('./components/RightPanel').then((module) => ({ default: module.RightPanel })));
+const MemoizedGraphCanvas = memo(GraphCanvas);
+const MemoizedLeftPanel = memo(LeftPanel);
+const MemoizedTopBar = memo(TopBar);
+const LazyRightPanel = lazy(() => import('./components/RightPanel').then((module) => ({ default: module.RightPanel })));
+const RightPanel = memo(LazyRightPanel);
 
 
 export default function App() {
@@ -74,7 +78,7 @@ export default function App() {
   return (
     <>
       <div className="app-shell" inert={showSplash} aria-hidden={showSplash}>
-        <TopBar onAnalyze={handleAnalyze} />
+        <MemoizedTopBar onAnalyze={handleAnalyze} />
         <div
           className="workspace"
           ref={workspaceRef}
@@ -83,7 +87,7 @@ export default function App() {
             '--right-panel-width': `${rightPanelWidth}px`,
           } as CSSProperties}
         >
-          <LeftPanel />
+          <MemoizedLeftPanel />
           <PanelResizeHandle
             side="left"
             value={leftPanelWidth}
@@ -93,7 +97,7 @@ export default function App() {
             workspaceRef={workspaceRef}
             onChange={setLeftPanelWidth}
           />
-          <GraphCanvas />
+          <MemoizedGraphCanvas />
           <PanelResizeHandle
             side="right"
             value={rightPanelWidth}
@@ -138,10 +142,14 @@ function PanelResizeHandle({
   workspaceRef,
   onChange,
 }: PanelResizeHandleProps) {
-  const getLimits = useCallback(() => {
+  const dragSession = useRef<{ bounds: DOMRect; gutterWidth: number; min: number; max: number } | null>(null);
+  const pendingClientX = useRef<number | null>(null);
+  const animationFrame = useRef<number | null>(null);
+
+  const getLimits = useCallback((measuredBounds?: DOMRect) => {
     const workspace = workspaceRef.current;
     if (!workspace) return { min, max };
-    const bounds = workspace.getBoundingClientRect();
+    const bounds = measuredBounds ?? workspace.getBoundingClientRect();
     const isMobile = window.matchMedia('(max-width: 760px)').matches;
     const isCompact = window.matchMedia('(max-width: 1000px)').matches;
     const otherPanelWidth = side === 'left' && isMobile ? 0 : oppositeWidth;
@@ -153,15 +161,15 @@ function PanelResizeHandle({
   }, [max, min, oppositeWidth, side, workspaceRef]);
 
   const resizeTo = useCallback(
-    (clientX: number, gutterWidth: number) => {
+    (clientX: number, session = dragSession.current) => {
       const workspace = workspaceRef.current;
       if (!workspace) return;
-      const bounds = workspace.getBoundingClientRect();
+      const bounds = session?.bounds ?? workspace.getBoundingClientRect();
       const width =
         side === 'left'
-          ? clientX - bounds.left - gutterWidth / 2
-          : bounds.right - clientX - gutterWidth / 2;
-      const limits = getLimits();
+          ? clientX - bounds.left - (session?.gutterWidth ?? 0) / 2
+          : bounds.right - clientX - (session?.gutterWidth ?? 0) / 2;
+      const limits = session ?? getLimits(bounds);
       onChange(Math.round(Math.min(limits.max, Math.max(limits.min, width))));
     },
     [getLimits, onChange, side, workspaceRef],
@@ -170,14 +178,42 @@ function PanelResizeHandle({
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    resizeTo(event.clientX, event.currentTarget.getBoundingClientRect().width);
+    const bounds = workspaceRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const limits = getLimits(bounds);
+    dragSession.current = {
+      bounds,
+      gutterWidth: event.currentTarget.getBoundingClientRect().width,
+      min: limits.min,
+      max: limits.max,
+    };
+    resizeTo(event.clientX);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      resizeTo(event.clientX, event.currentTarget.getBoundingClientRect().width);
-    }
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    pendingClientX.current = event.clientX;
+    if (animationFrame.current !== null) return;
+    animationFrame.current = window.requestAnimationFrame(() => {
+      animationFrame.current = null;
+      const clientX = pendingClientX.current;
+      pendingClientX.current = null;
+      if (clientX !== null && dragSession.current) resizeTo(clientX);
+    });
   };
+
+  const finishPointerResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragSession.current) return;
+    if (animationFrame.current !== null) window.cancelAnimationFrame(animationFrame.current);
+    animationFrame.current = null;
+    pendingClientX.current = null;
+    resizeTo(event.clientX);
+    dragSession.current = null;
+  };
+
+  useEffect(() => () => {
+    if (animationFrame.current !== null) window.cancelAnimationFrame(animationFrame.current);
+  }, []);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const direction = side === 'left' ? 1 : -1;
@@ -214,6 +250,8 @@ function PanelResizeHandle({
       title={`Drag to resize ${side} panel`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
+      onPointerUp={finishPointerResize}
+      onPointerCancel={finishPointerResize}
       onKeyDown={handleKeyDown}
     >
       <span className="panel-resizer__grip" aria-hidden="true" />
