@@ -1,5 +1,6 @@
 import "dotenv/config";
 import cors from "cors";
+import compression from "compression";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,7 @@ export function createApp(options = {}) {
 
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
+  app.use(compression());
   app.use(cors({ origin: (origin, callback) => callback(null, !origin || origins.includes("*") || origins.includes(origin)) }));
   app.use((request, response, next) => {
     const started = process.hrtime.bigint();

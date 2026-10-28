@@ -2,7 +2,6 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import { getChurn } from "./churn.js";
-import { buildReverseIndex, computeBlast } from "./blast.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
@@ -105,6 +104,7 @@ export async function buildGraph({
     parseImpl: parseFileImpl,
   });
   const parseRssLimitBytes = config.MAX_RSS_MB * 1024 * 1024;
+  const parseHeapLimitBytes = config.MAX_HEAP_MB * 1024 * 1024;
 
   const parseStartedAt = startTimer();
   try {
@@ -164,7 +164,8 @@ export async function buildGraph({
 
       if (
         processedCount < selectedFiles.length
-        && process.memoryUsage().rss > parseRssLimitBytes
+        && (process.memoryUsage().rss > parseRssLimitBytes
+          || process.memoryUsage().heapUsed > parseHeapLimitBytes)
       ) {
         memoryLimited = true;
         break;
@@ -175,7 +176,13 @@ export async function buildGraph({
   }
   reportTiming("parse", elapsedMs(parseStartedAt), { files: processedCount });
 
-  if (memoryLimited) truncatedReason = "memory";
+  if (memoryLimited) {
+    truncatedReason = "memory";
+    warnings.push({
+      file: null,
+      message: "Analysis stopped early to stay within the server memory limit.",
+    });
+  }
   onProgress?.({
     status: "graph",
     progress: { done: processedCount, total: selectedFiles.length },
@@ -197,6 +204,7 @@ export async function buildGraph({
     inCycle: false,
     fanIn: 0,
     fanOut: 0,
+    blastRadius: null,
   }));
   reportTiming("complexity", elapsedMs(complexityStartedAt), { files: nodes.length });
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -237,15 +245,6 @@ export async function buildGraph({
     nodesById.get(edge.target).fanIn += 1;
   }
   reportTiming("cycles", elapsedMs(cyclesStartedAt), { cycles: cycles.length });
-
-  const reverseIndex = buildReverseIndex(edges);
-  for (const node of nodes) {
-    node.blastRadius = computeBlast(reverseIndex, node.id, {
-      maxDepth: 4,
-      cap: Number.POSITIVE_INFINITY,
-    }).count;
-  }
-  analysis.reverseIndex = reverseIndex;
 
   const parsedPaths = new Set(parsedFiles.map(({ path: filePath }) => filePath));
   const excludedTests = sortedCodeFiles.filter(

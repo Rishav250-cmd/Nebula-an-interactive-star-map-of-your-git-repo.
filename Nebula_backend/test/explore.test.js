@@ -82,6 +82,36 @@ test("GET /api/file returns content, language and loc", async () => {
   });
 });
 
+test("cached analysis restores its checkout only when source files are requested", async () => {
+  const root = await makeRepo();
+  const id = `explore-cached-${path.basename(root)}`;
+  let cloneCalls = 0;
+  storeAnalysis({
+    id,
+    dir: path.join(root, "missing-checkout"),
+    url: "https://github.com/octocat/demo",
+    sha: null,
+    graph: { nodes: [], edges: [] },
+    analysis: { files: {} },
+  });
+  const app = createApp({
+    cloneRepoImpl: async () => {
+      cloneCalls += 1;
+      return { id, dir: root, sha: null };
+    },
+  });
+  try {
+    await withServer(app, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/file?id=${id}&path=src/index.js`);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).language, "javascript");
+      assert.equal(cloneCalls, 1);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("GET /api/file requires id and path", async () => {
   await withRepo(async ({ baseUrl, id }) => {
     assert.equal(

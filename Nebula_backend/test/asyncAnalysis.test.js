@@ -47,6 +47,7 @@ test("async analysis reuses an in-flight job for the same repository", async () 
 
 test("async analysis marks a valid cache hit ready without cloning", async () => {
   let cloneCalls = 0;
+  let cloneHeadChecks = 0;
   const analyses = new Map();
   const app = createApp({
     errorLogger: () => {},
@@ -63,7 +64,10 @@ test("async analysis marks a valid cache hit ready without cloning", async () =>
       return entry?.job ?? null;
     },
     getRemoteShaImpl: async () => "cached-sha",
-    getHeadShaImpl: async () => "cached-sha",
+    getHeadShaImpl: async () => {
+      cloneHeadChecks += 1;
+      return "cached-sha";
+    },
     loadAnalysisCacheImpl: async () => ({
       graph: { sha: "cached-sha", nodes: [], edges: [] },
       analysis: { files: {}, reverseIndex: new Map() },
@@ -79,6 +83,7 @@ test("async analysis marks a valid cache hit ready without cloning", async () =>
     const status = await waitForStatus(baseUrl, repoIdFor(REPO_URL));
     assert.equal(status.status, "ready");
     assert.equal(cloneCalls, 0);
+    assert.equal(cloneHeadChecks, 0);
   });
 });
 
@@ -118,6 +123,20 @@ test("blocking analysis remains the default", async () => {
       });
     },
   );
+});
+
+test("blocking requests for one repository share the same analysis job", async () => {
+  const options = makeOptions({ cloneDelay: 300 });
+  await withServer(createApp(options), async (baseUrl) => {
+    const [first, second] = await Promise.all([
+      postAnalyze(baseUrl, { url: REPO_URL }),
+      postAnalyze(baseUrl, { url: REPO_URL }),
+    ]);
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.deepEqual(await first.json(), await second.json());
+    assert.equal(options.getCloneCount(), 1);
+  });
 });
 
 test("analysis status returns 404 for unknown repositories", async () => {

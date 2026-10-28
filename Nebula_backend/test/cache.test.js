@@ -180,6 +180,10 @@ test("ping reports runtime shape and CORS limits response origins", async () => 
     assert.deepEqual(Object.keys(payload.limits), ["maxCodeFiles", "maxRepoMb", "maxConcurrentJobs"]);
     const denied = await fetch(`${baseUrl}/api/ping`, { headers: { Origin: "https://denied.example" } });
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
+    const compressed = await fetch(`${baseUrl}/api/mock-graph`, {
+      headers: { "accept-encoding": "gzip" },
+    });
+    assert.equal(compressed.headers.get("content-encoding"), "gzip");
   });
 });
 
@@ -219,6 +223,27 @@ test("analysis cache pruning keeps only the 30 newest JSON files", async () => {
     assert.equal(files.length, 30);
     assert.equal(files[0], "cache-02.json");
     assert.equal(files.at(-1), "cache-31.json");
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("analysis cache pruning evicts oldest repositories to fit the disk budget", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "nebula-cache-budget-"));
+  const now = Date.now();
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const filePath = path.join(cacheDir, `owner__repo-${index}__${SHA_ONE}.json`);
+      await writeFile(filePath, "x".repeat(10));
+      const modified = new Date(now + index * 1000);
+      await utimes(filePath, modified, modified);
+    }
+    await pruneAnalysisCache({ cacheDir, maxRepos: 10, maxDiskBytes: 20 });
+    const files = (await readdir(cacheDir)).sort();
+    assert.deepEqual(files, [
+      `owner__repo-1__${SHA_ONE}.json`,
+      `owner__repo-2__${SHA_ONE}.json`,
+    ]);
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
   }

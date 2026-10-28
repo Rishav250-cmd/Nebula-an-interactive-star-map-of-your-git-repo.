@@ -30,3 +30,15 @@ Aggregated over the step 3 requests, the slowest request-path stages were:
 3. **File walk — 303.33 ms.** React's 7,098-entry tree dominates this stage.
 
 The deferred churn refresh took 29,826 ms across the three repos, mostly on React. That time is off the graph-ready request path but remains background work. These are single-machine, single-network-path measurements, not repeated-run averages. The small-repository graph was compared directly with the step 2 cache: nodes, edges, and cycles were identical (14, 11, and 0, respectively). The new worker regression test also asserts those outputs for a small cyclic fixture with one malformed file.
+
+## Step 4 first-run and disk-cache timings
+
+Measured on 29 Oct 2026 in separate Node processes against clean clone/cache directories for the first run, then the same directories for a fresh-process cache run. Both used `DEBUG_TIMING=1`, `PARSER_WORKERS=2`, `MAX_REPO_MB=1500`, `MAX_CLONE_MB=2000`, `MAX_RSS_MB=620`, and `MAX_HEAP_MB=600`. Durations include the `git ls-remote` cache check; the cache-hit run had no clone, file-walk, or parse stages. The configured memory guard stopped the large first run after 1,350 files and returned a graph with `truncatedReason: "memory"`.
+
+| Repo | First run | Disk-cache run | First-run peak RSS | Cache-run peak RSS |
+|---|---:|---:|---:|---:|
+| Small: chalk | 5,377.51 ms | 1,023.89 ms | 156.1 MB | 93.0 MB |
+| Medium: fastify | 6,199.68 ms | 1,290.23 ms | 382.4 MB | 107.7 MB |
+| Large: React | 15,987.78 ms | 3,432.64 ms | 618.6 MB | 139.0 MB |
+
+The fresh-process cache request found the exact remote SHA and used the stored graph/analysis without cloning. Cached times were 1.0–3.4 seconds in this network run; each request includes the remote SHA check and loading the serialized analysis. In-process repeat requests use the ready analysis already held in memory and return sooner. Results are single-run measurements and clone/network latency varies.

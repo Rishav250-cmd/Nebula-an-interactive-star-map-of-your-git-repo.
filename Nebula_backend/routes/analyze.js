@@ -12,7 +12,7 @@ import {
   repoIdFor,
 } from "../services/ingest.js";
 import { buildCallGraph } from "../services/callgraph.js";
-import { computeBlast } from "../services/blast.js";
+import { buildReverseIndex, computeBlast } from "../services/blast.js";
 import { fetchGoodFirstIssues, parseGitHubRepo } from "../services/github.js";
 import { buildOnboarding } from "../services/onboarding.js";
 import { loadAnalysisCache, loadLatestAnalysisCache, saveAnalysisCache } from "../services/cache.js";
@@ -56,6 +56,8 @@ export function createAnalyzeRouter({
   getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
   cacheAnalysisGraphImpl = cacheAnalysisGraph,
+  buildCallGraphImpl = buildCallGraph,
+  buildReverseIndexImpl = buildReverseIndex,
   fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
   buildOnboardingImpl = buildOnboarding,
   updateAnalysisJobImpl = updateAnalysisJob,
@@ -63,6 +65,8 @@ export function createAnalyzeRouter({
 } = {}) {
   const router = express.Router();
   const runningJobs = new Map();
+  const blockingJobs = new Map();
+  const perFileResultCache = new WeakMap();
 
   router.post("/analyze", async (request, response) => {
     const { url, async: asyncMode } = request.body ?? {};
@@ -73,6 +77,10 @@ export function createAnalyzeRouter({
       const existing = getAnalysisImpl(id);
       if (existing?.graph && existing.job?.status === "ready")
         return response.status(202).json({ id, status: "ready" });
+      if (blockingJobs.has(id)) {
+        const status = getAnalysisImpl(id)?.job?.status ?? "cloning";
+        return response.status(202).json({ id, status });
+      }
       if (runningJobs.has(id)) {
         const status = getAnalysisImpl(id)?.job?.status ?? "cloning";
         return response.status(202).json({ id, status });
@@ -106,12 +114,7 @@ export function createAnalyzeRouter({
       if (existing?.graph && existing.job?.status === "ready") {
         return response.status(200).json({ id: existing.id, status: "ready" });
       }
-      const cacheProbe = await probeRepositoryCache(url);
-      const repository = cacheProbe.repository ?? await jobLimiter.run(
-        () => cloneAndBuild(url, { cacheProbe, timing }),
-      );
-      const storedRepository = storeAnalysisImpl(repository);
-      startChurnRefresh(storedRepository ?? repository);
+      const repository = await runBlockingAnalysis(url, timing);
       return response.status(200).json({ id: repository.id, status: "ready" });
     } catch (error) {
       throw pipelineError(error);
@@ -247,20 +250,77 @@ export function createAnalyzeRouter({
     }
   }
 
+  async function runBlockingAnalysis(url, timing = null) {
+    const id = repoIdFor(url);
+    const activeAsyncJob = runningJobs.get(id);
+    if (activeAsyncJob) {
+      await activeAsyncJob;
+      const completed = getAnalysisImpl(id);
+      if (completed?.graph && completed.job?.status === "ready") return completed;
+      throw new NebulaError("CLONE_FAILED", {
+        message: completed?.job?.error ?? "Repository analysis failed.",
+      });
+    }
+    const activeBlockingJob = blockingJobs.get(id);
+    if (activeBlockingJob) return activeBlockingJob;
+
+    const existing = getAnalysisImpl(id);
+    if (existing?.graph && existing.job?.status === "ready") return existing;
+
+    const { dir } = cloneLocationForUrlImpl(url);
+    storeAnalysisImpl({
+      id,
+      dir,
+      url,
+      graph: null,
+      analysis: null,
+      job: { status: "cloning", error: null, progress: { done: 0, total: 0 } },
+    });
+    const update = (state) => updateAnalysisJobImpl(id, {
+      ...state,
+      error: state.error ?? null,
+    });
+    const job = (async () => {
+      try {
+        const cacheProbe = await probeRepositoryCache(url);
+        const repository = cacheProbe.repository ?? await jobLimiter.run(
+          () => cloneAndBuild(url, { cacheProbe, timing, onState: update }),
+        );
+        const ready = storeAnalysisImpl({
+          ...repository,
+          job: {
+            status: "ready",
+            error: null,
+            progress: getAnalysisImpl(id)?.job?.progress ?? { done: 0, total: 0 },
+          },
+        });
+        startChurnRefresh(ready ?? repository);
+        return repository;
+      } catch (error) {
+        update({
+          status: "error",
+          error: getJobErrorMessage(error),
+          progress: getAnalysisImpl(id)?.job?.progress ?? { done: 0, total: 0 },
+        });
+        throw error;
+      } finally {
+        blockingJobs.delete(id);
+      }
+    })();
+    blockingJobs.set(id, job);
+    return job;
+  }
+
   router.post("/graph", async (request, response) => {
     const { url } = request.body ?? {};
     if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     try {
-      const existing = getAnalysisImpl(repoIdFor(url));
+      const id = repoIdFor(url);
+      const existing = getAnalysisImpl(id);
       if (existing?.graph && existing.job?.status === "ready")
         return response.status(200).json({ ...existing.graph, id: existing.id });
-      const cacheProbe = await probeRepositoryCache(url);
-      const repository = cacheProbe.repository ?? await jobLimiter.run(
-        () => cloneAndBuild(url, { cacheProbe }),
-      );
-      const storedRepository = storeAnalysisImpl(repository);
-      startChurnRefresh(storedRepository ?? repository);
+      const repository = await runBlockingAnalysis(url);
       return response
         .status(200)
         .json({ ...repository.graph, id: repository.id });
@@ -335,13 +395,12 @@ export function createAnalyzeRouter({
       if (!Object.hasOwn(analysis.analysis?.files ?? {}, filePath))
         throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not an analyzed code file" });
 
-      const callGraph = buildCallGraph(
-        analysis.analysis,
-        analysis.graph,
-        filePath,
-        {
-          depth: rawDepth === "2" ? 2 : 1,
-        },
+      const depth = rawDepth === "2" ? 2 : 1;
+      const callGraph = cachedFileResult(
+        perFileResultCache,
+        analysis,
+        `callgraph:${filePath}:${depth}`,
+        () => buildCallGraphImpl(analysis.analysis, analysis.graph, filePath, { depth }),
       );
       return response.status(200).json(callGraph);
     } catch (error) {
@@ -371,9 +430,17 @@ export function createAnalyzeRouter({
       if (!nodes.some((node) => node.id === filePath))
         throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not a graph node" });
 
-      const blast = computeBlast(analysis.analysis?.reverseIndex, filePath, {
-        maxDepth: rawDepth === undefined ? 4 : Number(rawDepth),
-      });
+      const maxDepth = rawDepth === undefined ? 4 : Number(rawDepth);
+      const reverseIndex = analysis.analysis.reverseIndex instanceof Map
+        ? analysis.analysis.reverseIndex
+        : buildReverseIndexImpl(analysis.graph?.edges);
+      analysis.analysis.reverseIndex = reverseIndex;
+      const blast = cachedFileResult(
+        perFileResultCache,
+        analysis,
+        `blast:${filePath}:${maxDepth}`,
+        () => computeBlast(reverseIndex, filePath, { maxDepth }),
+      );
       const totalFiles = nodes.length;
       return response.status(200).json({
         ...blast,
@@ -478,24 +545,19 @@ export function createAnalyzeRouter({
     const remoteCache = remoteSha ? await loadCache(url, remoteSha) : null;
     if (remoteCache) {
       const previousClone = cloneLocationForUrlImpl(url);
-      try {
-        const previousSha = await getHeadShaImpl(previousClone.dir);
-        if (previousSha === remoteSha) {
-          const repository = {
-            id: previousClone.id,
-            dir: previousClone.dir,
-            url,
-            sha: remoteSha,
-            graph: remoteCache.graph,
-            analysis: remoteCache.analysis,
-          };
-          return { remoteSha, remoteCache, repository };
-        }
-      } catch {
-        // A missing or stale checkout simply means the request must clone.
-      }
+      return {
+        remoteSha,
+        remoteCache,
+        repository: {
+          id: previousClone.id,
+          dir: previousClone.dir,
+          url,
+          sha: remoteSha,
+          graph: remoteCache.graph,
+          analysis: remoteCache.analysis,
+        },
+      };
     }
-
     return { remoteSha, remoteCache, repository: null };
   }
 
@@ -628,12 +690,15 @@ export function createAnalyzeRouter({
     if (repository.churnRefresh) return repository.churnRefresh;
     repository.churnRefresh = Promise.resolve()
       .then(async () => {
+        const directory = await stat(repository.dir).catch(() => null);
+        if (!directory?.isDirectory()) return null;
         const churnStartedAt = startTimer();
         const churn = await getChurnImpl(repository.dir, { months: 12 });
         reportTiming(null, repository.id, "churn", elapsedMs(churnStartedAt), { files: churn.size });
         return churn;
       })
       .then(async (churn) => {
+        if (!churn) return;
         repository.analysis.churn = churn;
         for (const node of repository.graph.nodes) node.churn = churn.get(node.id) ?? 0;
         repository.hasHistory = churn.size > 0;
@@ -673,6 +738,24 @@ function reportTiming(timing, repoId, stage, durationMs, extra) {
   if (!timingEnabled()) return;
   logTiming(repoId, stage, durationMs, extra);
   if (timing) timing.stages[stage] = (timing.stages[stage] ?? 0) + durationMs;
+}
+
+function cachedFileResult(cacheByAnalysis, analysis, key, build) {
+  let cache = cacheByAnalysis.get(analysis);
+  if (!cache) {
+    cache = new Map();
+    cacheByAnalysis.set(analysis, cache);
+  }
+  if (cache.has(key)) {
+    const result = cache.get(key);
+    cache.delete(key);
+    cache.set(key, result);
+    return result;
+  }
+  const result = build();
+  cache.set(key, result);
+  if (cache.size > 100) cache.delete(cache.keys().next().value);
+  return result;
 }
 
 function beginRequestTiming(response, repoId, { deferred = false } = {}) {

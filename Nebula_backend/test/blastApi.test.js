@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import { createApp } from "../app.js";
-import { buildReverseIndex } from "../services/blast.js";
-import { storeAnalysis } from "../services/store.js";
+import { getAnalysis, storeAnalysis } from "../services/store.js";
 
 test("GET /api/blast returns importer depths and repository percentage", async () => {
   const id = `blast-api-${Date.now()}`;
@@ -20,7 +19,7 @@ test("GET /api/blast returns importer depths and repository percentage", async (
     dir: "/unused",
     url: "https://github.com/octocat/blast-api",
     graph: { nodes, edges },
-    analysis: { reverseIndex: buildReverseIndex(edges) },
+    analysis: { files: {} },
   });
 
   await withServer(async (baseUrl) => {
@@ -43,6 +42,7 @@ test("GET /api/blast returns importer depths and repository percentage", async (
       percentOfRepo: 50,
     });
     assert.ok(nodes.every((node) => Object.hasOwn(node, "blastRadius")));
+    assert.ok(getAnalysis(id).analysis.reverseIndex instanceof Map);
   });
 });
 

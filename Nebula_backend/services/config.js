@@ -34,7 +34,8 @@ export const config = Object.freeze({
   MAX_ARCHIVE_ENTRIES: numberFromEnv("MAX_ARCHIVE_ENTRIES", 20000),
   MAX_UNCOMPRESSED_MB: numberFromEnv("MAX_UNCOMPRESSED_MB", 200),
   MAX_CACHE_MB: numberFromEnv("MAX_CACHE_MB", 50),
-  MAX_CACHE_FILES: numberFromEnv("MAX_CACHE_FILES", 30),
+  MAX_CACHE_FILES: numberFromEnv("MAX_CACHE_REPOS", numberFromEnv("MAX_CACHE_FILES", 30)),
+  MAX_CACHE_DISK_MB: numberFromEnv("MAX_CACHE_DISK_MB", 250),
   MAX_REPO_MB: numberFromEnv("MAX_REPO_MB", 250),
   MAX_CLONE_MB: numberFromEnv("MAX_CLONE_MB", 400),
   CLONE_TIMEOUT_MS: numberFromEnv("CLONE_TIMEOUT_MS", 90000),
@@ -44,6 +45,7 @@ export const config = Object.freeze({
   MAX_REPOS: numberFromEnv("MAX_REPOS", 4),
   REPO_TTL_MIN: numberFromEnv("REPO_TTL_MIN", 60),
   MAX_RSS_MB: numberFromEnv("MAX_RSS_MB", 420),
+  MAX_HEAP_MB: numberFromEnv("MAX_HEAP_MB", 350),
   RATE_LIMIT_MAX: numberFromEnv("RATE_LIMIT_MAX", 12),
   RATE_LIMIT_WINDOW_MS: numberFromEnv("RATE_LIMIT_WINDOW_MS", 600000),
 });

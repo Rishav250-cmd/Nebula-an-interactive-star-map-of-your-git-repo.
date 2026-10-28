@@ -9,6 +9,7 @@ import test from "node:test";
 import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { createApp } from "../app.js";
 import { buildGraph } from "../services/graph.js";
+import { buildCallGraph } from "../services/callgraph.js";
 
 test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nebula-api-test-"));
@@ -182,7 +183,14 @@ test("GET /api/callgraph validates requests and returns call graph; graph includ
       analysis: built.analysis,
     });
 
-    await withServer(createApp(), async (baseUrl) => {
+    let callGraphBuilds = 0;
+    const app = createApp({
+      buildCallGraphImpl: (...args) => {
+        callGraphBuilds += 1;
+        return buildCallGraph(...args);
+      },
+    });
+    await withServer(app, async (baseUrl) => {
       const success = await fetch(
         `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js`,
       );
@@ -204,6 +212,11 @@ test("GET /api/callgraph validates requests and returns call graph; graph includ
           type: "call",
         },
       ]);
+      const repeated = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js`,
+      );
+      assert.deepEqual(await repeated.json(), callGraph);
+      assert.equal(callGraphBuilds, 1);
 
       const missingPath = await fetch(
         `${baseUrl}/api/callgraph?id=callgraph-api-fixture`,
@@ -269,7 +282,9 @@ test("POST /api/graph uses the shared clone/build pipeline and includes the id",
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ...graph, id: "direct-graph" });
-    assert.deepEqual(buildArguments, {
+    const { onProgress, ...argumentsWithoutProgress } = buildArguments;
+    assert.equal(typeof onProgress, "function");
+    assert.deepEqual(argumentsWithoutProgress, {
       id: "direct-graph",
       dir: "/fixture/repo",
       files: ["src/index.ts"],

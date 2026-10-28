@@ -1,7 +1,9 @@
 import express from "express";
+import { stat } from "node:fs/promises";
+import { simpleGit } from "simple-git";
 import pathModule from "node:path";
 import { readRepoFile } from "../services/fileService.js";
-import { listFiles } from "../services/ingest.js";
+import { cloneRepo, listFiles } from "../services/ingest.js";
 import { searchFiles, searchSymbols } from "../services/searchService.js";
 import { listSymbols } from "../services/symbolService.js";
 import { parseFile } from "../services/parser.js";
@@ -20,8 +22,10 @@ export function createExploreRouter({
   getAnalysisImpl = getAnalysis,
   listFilesImpl = listFiles,
   listSymbolsImpl = listSymbols,
+  cloneRepoImpl = cloneRepo,
 } = {}) {
   const router = express.Router();
+  const checkoutJobs = new WeakMap();
 
   // Search is called on every keystroke, so remember each repo's file list
   // instead of walking the disk again. (Keyed by the analysis object itself.)
@@ -29,9 +33,39 @@ export function createExploreRouter({
 
   async function getFileList(analysis) {
     if (!fileListCache.has(analysis)) {
+      await ensureLocalClone(analysis);
       fileListCache.set(analysis, await listFilesImpl(analysis.dir));
     }
     return fileListCache.get(analysis);
+  }
+
+  async function ensureLocalClone(analysis) {
+    const existing = await stat(analysis.dir).catch(() => null);
+    if (existing?.isDirectory()) return;
+    const currentJob = checkoutJobs.get(analysis);
+    if (currentJob) return currentJob;
+    const job = (async () => {
+      const cloned = await cloneRepoImpl(analysis.url);
+      if (analysis.sha && cloned.sha !== analysis.sha) {
+        const git = simpleGit(cloned.dir);
+        await git.fetch(["--depth=1", "origin", analysis.sha]);
+        await git.checkout(["--detach", analysis.sha]);
+        const checkedOutSha = (await git.revparse(["HEAD"])).trim();
+        if (checkedOutSha !== analysis.sha)
+          throw new Error("Could not restore the cached repository revision.");
+      }
+      analysis.dir = cloned.dir;
+      analysis.cloneInfo = {
+        defaultBranch: cloned.defaultBranch ?? null,
+        shallow: cloned.shallow === true,
+      };
+    })();
+    checkoutJobs.set(analysis, job);
+    try {
+      await job;
+    } finally {
+      checkoutJobs.delete(analysis);
+    }
   }
 
   router.get("/file", async (request, response) => {
@@ -49,6 +83,7 @@ export function createExploreRouter({
     if (!analysis) throw unknownIdError(id);
 
     try {
+      await ensureLocalClone(analysis);
       const result = await readRepoFile(analysis.dir, path);
       const fileFunctions = analysis.analysis?.files?.[path]?.functions;
       const functions = CODE_EXTENSIONS.has(
