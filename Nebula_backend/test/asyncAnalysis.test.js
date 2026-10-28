@@ -3,7 +3,6 @@ import { once } from "node:events";
 import test from "node:test";
 import { createApp } from "../app.js";
 import { repoIdFor } from "../services/ingest.js";
-import { getAnalysis } from "../services/store.js";
 
 const REPO_URL = "https://github.com/octocat/async-fixture";
 
@@ -23,7 +22,7 @@ test("async analysis returns immediately and status reaches ready", async () => 
     const status = await waitForStatus(baseUrl, repoIdFor(REPO_URL));
     assert.equal(status.status, "ready");
     assert.deepEqual(status.progress, { done: 2, total: 2 });
-    assert.equal(getAnalysis(repoIdFor(REPO_URL)).job.status, "ready");
+    assert.equal(options.getAnalysis(repoIdFor(REPO_URL)).job.status, "ready");
   });
 });
 
@@ -48,7 +47,21 @@ test("async analysis reuses an in-flight job for the same repository", async () 
 
 test("async analysis marks a valid cache hit ready without cloning", async () => {
   let cloneCalls = 0;
+  const analyses = new Map();
   const app = createApp({
+    errorLogger: () => {},
+    cloneLocationForUrlImpl: () => ({ id: repoIdFor(REPO_URL), dir: "/fixture/cached" }),
+    getAnalysisImpl: (id) => analyses.get(id) ?? null,
+    storeAnalysisImpl: (entry) => {
+      const stored = { ...(analyses.get(entry.id) ?? {}), ...entry };
+      analyses.set(entry.id, stored);
+      return stored;
+    },
+    updateAnalysisJobImpl: (id, job) => {
+      const entry = analyses.get(id);
+      if (entry) entry.job = { ...entry.job, ...job };
+      return entry?.job ?? null;
+    },
     getRemoteShaImpl: async () => "cached-sha",
     getHeadShaImpl: async () => "cached-sha",
     loadAnalysisCacheImpl: async () => ({
@@ -108,7 +121,7 @@ test("blocking analysis remains the default", async () => {
 });
 
 test("analysis status returns 404 for unknown repositories", async () => {
-  await withServer(createApp(), async (baseUrl) => {
+  await withServer(createApp({ errorLogger: () => {} }), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/analyze/unknown/status`);
     assert.equal(response.status, 404);
     assert.equal((await response.json()).error, "Unknown repository id");
@@ -117,8 +130,27 @@ test("analysis status returns 404 for unknown repositories", async () => {
 
 function makeOptions({ cloneDelay = 0 } = {}) {
   let cloneCount = 0;
+  const analyses = new Map();
   return {
     getCloneCount: () => cloneCount,
+    getAnalysis: (id) => analyses.get(id) ?? null,
+    getAnalysisImpl: (id) => analyses.get(id) ?? null,
+    storeAnalysisImpl: (entry) => {
+      const current = analyses.get(entry.id) ?? {};
+      const stored = {
+        ...current,
+        ...entry,
+        job: entry.job ?? current.job ?? { status: "ready", error: null, progress: { done: 0, total: 0 } },
+      };
+      analyses.set(entry.id, stored);
+      return stored;
+    },
+    updateAnalysisJobImpl: (id, job) => {
+      const entry = analyses.get(id);
+      if (!entry) return null;
+      entry.job = { ...entry.job, ...job };
+      return entry.job;
+    },
     getRemoteShaImpl: async () => null,
     cloneRepoImpl: async (url) => {
       cloneCount += 1;

@@ -1,7 +1,7 @@
 import express from "express";
 import { computeHealth } from "../services/health.js";
 import { buildHeatmap } from "../services/heatmap.js";
-import { getAnalysis } from "../services/store.js";
+import { getAnalysis, unknownIdError } from "../services/store.js";
 import { NebulaError } from "../services/errors.js";
 
 export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
@@ -13,7 +13,7 @@ export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
     if (typeof id !== "string" || id === "")
       throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     const analysis = getAnalysisImpl(id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(id);
     if (!analysis.graph || !analysis.analysis) throw new NebulaError("ANALYSIS_NOT_READY");
     return analysis;
   }

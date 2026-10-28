@@ -5,7 +5,7 @@ import { listFiles } from "../services/ingest.js";
 import { searchFiles, searchSymbols } from "../services/searchService.js";
 import { listSymbols } from "../services/symbolService.js";
 import { parseFile } from "../services/parser.js";
-import { getAnalysis } from "../services/store.js";
+import { getAnalysis, unknownIdError } from "../services/store.js";
 import { NebulaError } from "../services/errors.js";
 
 const MAX_QUERY_LENGTH = 200;
@@ -46,7 +46,7 @@ export function createExploreRouter({
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(id);
 
     try {
       const result = await readRepoFile(analysis.dir, path);
@@ -83,7 +83,7 @@ export function createExploreRouter({
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(id);
 
     try {
       const files = await getFileList(analysis);

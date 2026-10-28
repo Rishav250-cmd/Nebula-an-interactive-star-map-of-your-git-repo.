@@ -20,10 +20,12 @@ import {
   cacheAnalysisGraph,
   getAnalysis,
   storeAnalysis,
+  unknownIdError,
   updateAnalysisJob,
 } from "../services/store.js";
 import { NebulaError } from "../services/errors.js";
 import { config } from "../services/config.js";
+import { createJobLimiter } from "../services/limiter.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
@@ -52,6 +54,7 @@ export function createAnalyzeRouter({
   fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
   buildOnboardingImpl = buildOnboarding,
   updateAnalysisJobImpl = updateAnalysisJob,
+  jobLimiter = createJobLimiter(),
 } = {}) {
   const router = express.Router();
   const runningJobs = new Map();
@@ -62,8 +65,16 @@ export function createAnalyzeRouter({
 
     if (asyncMode === true) {
       const id = repoIdFor(url);
-      if (runningJobs.has(id))
-        return response.status(202).json({ id, status: "cloning" });
+      const existing = getAnalysisImpl(id);
+      if (existing?.graph && existing.job?.status === "ready")
+        return response.status(202).json({ id, status: "ready" });
+      if (runningJobs.has(id)) {
+        const status = getAnalysisImpl(id)?.job?.status ?? "cloning";
+        return response.status(202).json({ id, status });
+      }
+
+      const reservation = jobLimiter.reserve();
+      const initialStatus = reservation.queued ? "queued" : "cloning";
 
       const { dir } = cloneLocationForUrlImpl(url);
       storeAnalysisImpl({
@@ -73,18 +84,25 @@ export function createAnalyzeRouter({
         graph: null,
         analysis: null,
         job: {
-          status: "cloning",
+          status: initialStatus,
           error: null,
           progress: { done: 0, total: 0 },
         },
       });
-      const job = runAsyncJob(id, url);
+      const job = runAsyncJob(id, url, reservation);
       runningJobs.set(id, job);
-      return response.status(202).json({ id, status: "cloning" });
+      return response.status(202).json({ id, status: initialStatus });
     }
 
     try {
-      const repository = await cloneAndBuild(url);
+      const existing = getAnalysisImpl(repoIdFor(url));
+      if (existing?.graph && existing.job?.status === "ready") {
+        return response.status(200).json({ id: existing.id, status: "ready" });
+      }
+      const cacheProbe = await probeRepositoryCache(url);
+      const repository = cacheProbe.repository ?? await jobLimiter.run(
+        () => cloneAndBuild(url, { cacheProbe }),
+      );
       storeAnalysisImpl(repository);
       return response.status(200).json({ id: repository.id, status: "ready" });
     } catch (error) {
@@ -94,7 +112,7 @@ export function createAnalyzeRouter({
 
   router.get("/analyze/:id/status", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository) throw new NebulaError("UNKNOWN_ID");
+    if (!repository) throw unknownIdError(request.params.id);
     const job = repository.job ?? {
       status: repository.graph ? "ready" : "cloning",
       error: null,
@@ -110,7 +128,7 @@ export function createAnalyzeRouter({
 
   router.get("/progress/:id", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository) throw new NebulaError("UNKNOWN_ID");
+    if (!repository) throw unknownIdError(request.params.id);
 
     response.status(200);
     response.set({
@@ -167,25 +185,33 @@ export function createAnalyzeRouter({
     sendState();
   });
 
-  async function runAsyncJob(id, url) {
+  async function runAsyncJob(id, url, reservation) {
     let active = true;
     let timeoutId;
-    const timeout = new Promise((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new JobTimeoutError()),
-        JOB_TIMEOUT_MS,
-      );
-    });
     const update = (state) => {
       if (!active) return;
       updateAnalysisJobImpl(id, { ...state, error: state.error ?? null });
     };
 
     try {
-      const repository = await Promise.race([
-        cloneAndBuild(url, { onState: update }),
-        timeout,
-      ]);
+      const cacheProbe = await probeRepositoryCache(url);
+      let repository = cacheProbe.repository;
+      if (repository) {
+        jobLimiter.cancelReservation(reservation);
+        reservation = null;
+      } else {
+        repository = await jobLimiter.runReserved(reservation, () => {
+          update({ status: "cloning" });
+          const timeout = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new JobTimeoutError()), JOB_TIMEOUT_MS);
+          });
+          return Promise.race([
+            cloneAndBuild(url, { onState: update, cacheProbe }),
+            timeout,
+          ]);
+        }, { onQueued: () => update({ status: "queued" }) });
+        reservation = null;
+      }
       if (!active) return;
       const readyJob = {
         status: "ready",
@@ -195,6 +221,7 @@ export function createAnalyzeRouter({
       storeAnalysisImpl({ ...repository, job: readyJob });
       update(readyJob);
     } catch (error) {
+      if (reservation) jobLimiter.cancelReservation(reservation);
       if (active) {
         active = false;
         updateAnalysisJobImpl(id, {
@@ -215,7 +242,13 @@ export function createAnalyzeRouter({
     if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     try {
-      const repository = await cloneAndBuild(url);
+      const existing = getAnalysisImpl(repoIdFor(url));
+      if (existing?.graph && existing.job?.status === "ready")
+        return response.status(200).json({ ...existing.graph, id: existing.id });
+      const cacheProbe = await probeRepositoryCache(url);
+      const repository = cacheProbe.repository ?? await jobLimiter.run(
+        () => cloneAndBuild(url, { cacheProbe }),
+      );
       storeAnalysisImpl(repository);
       return response
         .status(200)
@@ -263,7 +296,7 @@ export function createAnalyzeRouter({
 
   router.get("/graph/:id", async (request, response) => {
     const analysis = getAnalysisImpl(request.params.id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(request.params.id);
 
     try {
       await ensureGraphAnalysis(analysis);
@@ -284,7 +317,7 @@ export function createAnalyzeRouter({
       throw new NebulaError("INVALID_QUERY", { message: "Depth must be 1 or 2" });
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(id);
 
     try {
       await ensureGraphAnalysis(analysis);
@@ -319,7 +352,7 @@ export function createAnalyzeRouter({
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis) throw new NebulaError("UNKNOWN_ID");
+    if (!analysis) throw unknownIdError(id);
 
     try {
       await ensureGraphAnalysis(analysis);
@@ -346,7 +379,7 @@ export function createAnalyzeRouter({
 
   router.get("/onboarding/:id", async (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository) throw new NebulaError("UNKNOWN_ID");
+    if (!repository) throw unknownIdError(request.params.id);
 
     if (
       repository.onboardingCache &&
@@ -389,7 +422,7 @@ export function createAnalyzeRouter({
     }
   });
 
-  async function cloneAndBuild(url, { onState } = {}) {
+  async function probeRepositoryCache(url) {
     let remoteSha = null;
     try {
       remoteSha = await getRemoteShaImpl(url);
@@ -406,19 +439,31 @@ export function createAnalyzeRouter({
       try {
         const previousSha = await getHeadShaImpl(previousClone.dir);
         if (previousSha === remoteSha) {
-          onState?.({ status: "ready", progress: { done: 0, total: 0 } });
-          return {
+          const repository = {
             id: previousClone.id,
             dir: previousClone.dir,
             url,
+            sha: remoteSha,
             graph: remoteCache.graph,
             analysis: remoteCache.analysis,
           };
+          return { remoteSha, remoteCache, repository };
         }
       } catch {
         // A missing or stale checkout simply means the request must clone.
       }
     }
+
+    return { remoteSha, remoteCache, repository: null };
+  }
+
+  async function cloneAndBuild(url, { onState, cacheProbe } = {}) {
+    const probe = cacheProbe ?? await probeRepositoryCache(url);
+    if (probe.repository) {
+      onState?.({ status: "ready", progress: { done: 0, total: 0 } });
+      return probe.repository;
+    }
+    const { remoteSha, remoteCache } = probe;
 
     let clonedRepository;
     try {
@@ -431,6 +476,7 @@ export function createAnalyzeRouter({
       id: clonedRepository.id,
       dir: clonedRepository.dir,
       url,
+      sha: clonedRepository.sha ?? null,
       cloneInfo: {
         defaultBranch: clonedRepository.defaultBranch ?? null,
         shallow: clonedRepository.shallow === true,
@@ -457,6 +503,7 @@ export function createAnalyzeRouter({
     if (cloneCache) {
       repository.graph = cloneCache.graph;
       repository.analysis = cloneCache.analysis;
+      repository.sha = clonedSha;
       onState?.({ status: "ready", progress: { done: 0, total: 0 } });
       return repository;
     }
@@ -465,6 +512,7 @@ export function createAnalyzeRouter({
     repository.graph = built.graph;
     repository.analysis = built.analysis;
     const builtSha = clonedSha ?? built.graph?.sha;
+    repository.sha = builtSha ?? null;
     if (builtSha) {
       try {
         await saveAnalysisCacheImpl({
