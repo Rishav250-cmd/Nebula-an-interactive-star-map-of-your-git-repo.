@@ -1,20 +1,20 @@
 import { create } from 'zustand';
 import { analyzeRepo, clearCallGraphCache, fetchCallGraph, fetchGraph } from '../api/client';
 import { EMPTY_FILTERS, type GraphFilters } from '../lib/applyFilters';
-import type { CallGraph, GraphData, GraphWarning } from '../types/graph';
+import type { CallGraph, GraphData, GraphWarning, HealthReport } from '../types/graph';
 
 export type GraphStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type AnalysisPhase = 'idle' | 'cloning' | 'parsing' | 'ready' | 'error';
-export type ViewMode = 'file' | 'function';
 export type CallGraphStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type EdgeToggleKind = 'imports' | 'calls' | 'cycles';
-
+export type ViewMode = 'file' | 'function' | 'heatmap';
 const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const INVALID_URL_MESSAGE = 'Enter a valid GitHub repository URL, such as https://github.com/owner/repo.';
 
 type GraphStore = {
   repoUrl: string;
   graph: GraphData | null;
+  healthReport: HealthReport | null;
   repoId: string | null;
   analysisId: string | null;
   status: GraphStatus;
@@ -39,6 +39,7 @@ type GraphStore = {
   filters: GraphFilters;
   setRepoUrl: (url: string) => void;
   setGraph: (graph: GraphData | null) => void;
+  setHealthReport: (report: HealthReport | null) => void;
   setAnalysisId: (id: string | null) => void;
   setStatus: (status: GraphStatus, error?: string | null) => void;
   setProgressMessage: (message: string | null) => void;
@@ -82,6 +83,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     clearCallGraphCache();
     set({
       viewMode: 'file',
+      healthReport: null,
       callGraph: null,
       callGraphStatus: 'idle',
       callGraphError: null,
@@ -95,6 +97,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
   return {
     repoUrl: '',
     graph: null,
+    healthReport: null,
     repoId: null,
     analysisId: null,
     status: 'idle',
@@ -120,6 +123,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
 
     setRepoUrl: (repoUrl) => set({ repoUrl }),
     setGraph: (graph) => set({ graph }),
+    setHealthReport: (healthReport) => set({ healthReport }),
     setAnalysisId: (analysisId) => set({ analysisId, repoId: analysisId }),
     setStatus: (status, error) => set((state) => {
       const phase: AnalysisPhase = status === 'loading'
@@ -171,7 +175,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
       set({ viewMode });
       if (viewMode === 'function' && get().selectedId) {
         void get().loadCallGraph();
-      } else if (viewMode === 'file') {
+      } else {
         cancelCallGraphRequest();
       }
     },

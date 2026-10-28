@@ -1,4 +1,5 @@
 import { useGraphStore } from '../store/useGraphStore';
+import { HeatmapButton } from './HeatMapButton';
 
 const EXAMPLE_REPOSITORIES = [
   { label: 'expressjs/express', url: 'https://github.com/expressjs/express' },
@@ -79,6 +80,7 @@ export function TopBar({ onAnalyze }: TopBarProps) {
         <button className="analyze-button" type="submit" disabled={isLoading || !repoUrl.trim()}>
           {isLoading ? 'Analyzing…' : 'Analyze'}
         </button>
+        <HeatmapButton />
         <div className="example-repositories" aria-label="Example repositories">
           <span>Try:</span>
           {EXAMPLE_REPOSITORIES.map((repository) => (

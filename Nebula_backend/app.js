@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAnalyzeRouter } from "./routes/analyze.js";
 import { createExploreRouter } from "./routes/explore.js";
+import { createInsightsRouter } from "./routes/insights.js";
 
 const mockGraphPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../docs/mock-graph.json");
 
@@ -28,6 +29,7 @@ export function createApp(options = {}) {
 
   app.use("/api", createAnalyzeRouter(options));
   app.use("/api", createExploreRouter(options));
+  app.use("/api", createInsightsRouter(options));
 
   return app;
 }

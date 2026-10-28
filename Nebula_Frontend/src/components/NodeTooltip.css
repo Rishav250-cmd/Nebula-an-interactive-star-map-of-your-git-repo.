@@ -58,3 +58,7 @@
   font-size: 10px;
   font-weight: 600;
 }
+
+.node-tooltip__badges { display: flex; flex-wrap: wrap; gap: 5px; }
+.node-tooltip__badge--god { border-color: rgb(167 139 250 / 45%); color: #ddd6fe; background: rgb(124 58 237 / 18%); }
+.node-tooltip__badge--cycle { border-color: rgb(251 191 36 / 40%); color: #fde68a; background: rgb(245 158 11 / 12%); }

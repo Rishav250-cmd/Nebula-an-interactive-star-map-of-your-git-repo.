@@ -1,5 +1,5 @@
 import fallbackGraph from '../data/mock-graph.json';
-import type { AnalyzeResponse, CallGraph, GraphData, SearchResult } from '../types/graph';
+import type { AnalyzeResponse, CallGraph, GraphData, HealthReport, SearchResult } from '../types/graph';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5001';
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -85,6 +85,11 @@ export function analyzeRepo(url: string, signal?: AbortSignal): Promise<AnalyzeR
 
 export function fetchGraph(id: string, signal?: AbortSignal): Promise<GraphData> {
   return requestJson<GraphData>(`/api/graph/${encodeURIComponent(id)}`, { signal });
+}
+
+export function fetchHealth(id: string, signal?: AbortSignal): Promise<HealthReport> {
+  const params = new URLSearchParams({ id, limit: '50000' });
+  return requestJson<HealthReport>(`/api/health?${params.toString()}`, { signal });
 }
 
 export function fetchCallGraph(
