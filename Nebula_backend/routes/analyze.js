@@ -1,8 +1,9 @@
 import express from "express";
 import multer from "multer";
 import { rm } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
-import { extractZipArchive, ZipArchiveError } from "../services/archive.js";
+import { extractZipArchive } from "../services/archive.js";
 import {
   buildTree,
   cloneLocationForUrl,
@@ -14,23 +15,26 @@ import { buildCallGraph } from "../services/callgraph.js";
 import { computeBlast } from "../services/blast.js";
 import { fetchGoodFirstIssues, parseGitHubRepo } from "../services/github.js";
 import { buildOnboarding } from "../services/onboarding.js";
-import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
+import { loadAnalysisCache, loadLatestAnalysisCache, saveAnalysisCache } from "../services/cache.js";
 import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
 import {
   cacheAnalysisGraph,
   getAnalysis,
   storeAnalysis,
+  unknownIdError,
   updateAnalysisJob,
 } from "../services/store.js";
-import { GraphError } from "../src/graph.js";
+import { NebulaError } from "../services/errors.js";
+import { config } from "../services/config.js";
+import { createJobLimiter } from "../services/limiter.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
 const uploadZip = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 0 },
+  limits: { fileSize: config.MAX_UPLOAD_MB * 1024 * 1024, files: 1, fields: 0 },
 });
-const JOB_TIMEOUT_MS = 3 * 60 * 1000;
+const JOB_TIMEOUT_MS = config.JOB_TIMEOUT_MS;
 const PROGRESS_POLL_MS = 300;
 const PROGRESS_HEARTBEAT_MS = 15 * 1000;
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
@@ -41,6 +45,7 @@ export function createAnalyzeRouter({
   getRemoteShaImpl = getRemoteHeadSha,
   getHeadShaImpl = getHeadSha,
   loadAnalysisCacheImpl = loadAnalysisCache,
+  loadLatestAnalysisCacheImpl = loadLatestAnalysisCache,
   saveAnalysisCacheImpl = saveAnalysisCache,
   parseFileImpl,
   listFilesImpl = listFiles,
@@ -51,19 +56,27 @@ export function createAnalyzeRouter({
   fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
   buildOnboardingImpl = buildOnboarding,
   updateAnalysisJobImpl = updateAnalysisJob,
+  jobLimiter = createJobLimiter(),
 } = {}) {
   const router = express.Router();
   const runningJobs = new Map();
 
   router.post("/analyze", async (request, response) => {
     const { url, async: asyncMode } = request.body ?? {};
-    if (!isValidRepositoryUrl(url))
-      return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     if (asyncMode === true) {
       const id = repoIdFor(url);
-      if (runningJobs.has(id))
-        return response.status(202).json({ id, status: "cloning" });
+      const existing = getAnalysisImpl(id);
+      if (existing?.graph && existing.job?.status === "ready")
+        return response.status(202).json({ id, status: "ready" });
+      if (runningJobs.has(id)) {
+        const status = getAnalysisImpl(id)?.job?.status ?? "cloning";
+        return response.status(202).json({ id, status });
+      }
+
+      const reservation = jobLimiter.reserve();
+      const initialStatus = reservation.queued ? "queued" : "cloning";
 
       const { dir } = cloneLocationForUrlImpl(url);
       storeAnalysisImpl({
@@ -73,29 +86,35 @@ export function createAnalyzeRouter({
         graph: null,
         analysis: null,
         job: {
-          status: "cloning",
+          status: initialStatus,
           error: null,
           progress: { done: 0, total: 0 },
         },
       });
-      const job = runAsyncJob(id, url);
+      const job = runAsyncJob(id, url, reservation);
       runningJobs.set(id, job);
-      return response.status(202).json({ id, status: "cloning" });
+      return response.status(202).json({ id, status: initialStatus });
     }
 
     try {
-      const repository = await cloneAndBuild(url);
+      const existing = getAnalysisImpl(repoIdFor(url));
+      if (existing?.graph && existing.job?.status === "ready") {
+        return response.status(200).json({ id: existing.id, status: "ready" });
+      }
+      const cacheProbe = await probeRepositoryCache(url);
+      const repository = cacheProbe.repository ?? await jobLimiter.run(
+        () => cloneAndBuild(url, { cacheProbe }),
+      );
       storeAnalysisImpl(repository);
       return response.status(200).json({ id: repository.id, status: "ready" });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/analyze/:id/status", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw unknownIdError(request.params.id);
     const job = repository.job ?? {
       status: repository.graph ? "ready" : "cloning",
       error: null,
@@ -111,8 +130,7 @@ export function createAnalyzeRouter({
 
   router.get("/progress/:id", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw unknownIdError(request.params.id);
 
     response.status(200);
     response.set({
@@ -169,25 +187,33 @@ export function createAnalyzeRouter({
     sendState();
   });
 
-  async function runAsyncJob(id, url) {
+  async function runAsyncJob(id, url, reservation) {
     let active = true;
     let timeoutId;
-    const timeout = new Promise((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new JobTimeoutError()),
-        JOB_TIMEOUT_MS,
-      );
-    });
     const update = (state) => {
       if (!active) return;
       updateAnalysisJobImpl(id, { ...state, error: state.error ?? null });
     };
 
     try {
-      const repository = await Promise.race([
-        cloneAndBuild(url, { onState: update }),
-        timeout,
-      ]);
+      const cacheProbe = await probeRepositoryCache(url);
+      let repository = cacheProbe.repository;
+      if (repository) {
+        jobLimiter.cancelReservation(reservation);
+        reservation = null;
+      } else {
+        repository = await jobLimiter.runReserved(reservation, () => {
+          update({ status: "cloning" });
+          const timeout = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new JobTimeoutError()), JOB_TIMEOUT_MS);
+          });
+          return Promise.race([
+            cloneAndBuild(url, { onState: update, cacheProbe }),
+            timeout,
+          ]);
+        }, { onQueued: () => update({ status: "queued" }) });
+        reservation = null;
+      }
       if (!active) return;
       const readyJob = {
         status: "ready",
@@ -197,6 +223,7 @@ export function createAnalyzeRouter({
       storeAnalysisImpl({ ...repository, job: readyJob });
       update(readyJob);
     } catch (error) {
+      if (reservation) jobLimiter.cancelReservation(reservation);
       if (active) {
         active = false;
         updateAnalysisJobImpl(id, {
@@ -214,32 +241,33 @@ export function createAnalyzeRouter({
 
   router.post("/graph", async (request, response) => {
     const { url } = request.body ?? {};
-    if (!isValidRepositoryUrl(url))
-      return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     try {
-      const repository = await cloneAndBuild(url);
+      const existing = getAnalysisImpl(repoIdFor(url));
+      if (existing?.graph && existing.job?.status === "ready")
+        return response.status(200).json({ ...existing.graph, id: existing.id });
+      const cacheProbe = await probeRepositoryCache(url);
+      const repository = cacheProbe.repository ?? await jobLimiter.run(
+        () => cloneAndBuild(url, { cacheProbe }),
+      );
       storeAnalysisImpl(repository);
       return response
         .status(200)
         .json({ ...repository.graph, id: repository.id });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.post("/upload", runZipUpload, async (request, response) => {
     if (!request.file) {
-      return response
-        .status(400)
-        .json({ error: "A ZIP file is required in the 'file' field." });
+      throw new NebulaError("BAD_UPLOAD", { message: "A ZIP file is required in the 'file' field." });
     }
 
     const fileName = request.file.originalname.split(/[\\/]/).at(-1) || "";
     if (!fileName.toLowerCase().endsWith(".zip")) {
-      return response
-        .status(400)
-        .json({ error: "Only .zip files are accepted." });
+      throw new NebulaError("BAD_UPLOAD", { message: "Only .zip files are accepted." });
     }
 
     let extracted;
@@ -263,28 +291,19 @@ export function createAnalyzeRouter({
     } catch (error) {
       if (extracted?.dir)
         await rm(extracted.dir, { recursive: true, force: true });
-      if (error instanceof ZipArchiveError) {
-        return response.status(error.statusCode).json({ error: error.message });
-      }
-      console.error(
-        "Repository upload failed:",
-        error?.message ?? String(error),
-      );
-      return response
-        .status(500)
-        .json({ error: "Could not process uploaded repository." });
+      if (error instanceof NebulaError) throw error;
+      throw new NebulaError("BAD_UPLOAD", { cause: error });
     }
   });
 
   router.get("/graph/:id", async (request, response) => {
     const analysis = getAnalysisImpl(request.params.id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw unknownIdError(request.params.id);
 
     try {
       await ensureGraphAnalysis(analysis);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
 
     return response.status(200).json(analysis.graph);
@@ -293,26 +312,19 @@ export function createAnalyzeRouter({
   router.get("/callgraph", async (request, response) => {
     const { id, path: filePath, depth: rawDepth } = request.query;
     if (typeof id !== "string" || id === "")
-      return response
-        .status(400)
-        .json({ error: "The 'id' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     if (typeof filePath !== "string" || filePath === "")
-      return response
-        .status(400)
-        .json({ error: "The 'path' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'path' query parameter is required" });
     if (rawDepth !== undefined && rawDepth !== "1" && rawDepth !== "2")
-      return response.status(400).json({ error: "Depth must be 1 or 2" });
+      throw new NebulaError("INVALID_QUERY", { message: "Depth must be 1 or 2" });
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw unknownIdError(id);
 
     try {
       await ensureGraphAnalysis(analysis);
       if (!Object.hasOwn(analysis.analysis?.files ?? {}, filePath))
-        return response
-          .status(404)
-          .json({ error: "Path is not an analyzed code file" });
+        throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not an analyzed code file" });
 
       const callGraph = buildCallGraph(
         analysis.analysis,
@@ -324,38 +336,31 @@ export function createAnalyzeRouter({
       );
       return response.status(200).json(callGraph);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/blast", async (request, response) => {
     const { id, path: filePath, depth: rawDepth } = request.query;
     if (typeof filePath !== "string" || filePath === "")
-      return response
-        .status(400)
-        .json({ error: "The 'path' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'path' query parameter is required" });
     if (typeof id !== "string" || id === "")
-      return response
-        .status(400)
-        .json({ error: "The 'id' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     if (
       rawDepth !== undefined &&
       (typeof rawDepth !== "string" || !/^[1-6]$/.test(rawDepth))
     ) {
-      return response
-        .status(400)
-        .json({ error: "Depth must be an integer from 1 to 6" });
+      throw new NebulaError("INVALID_QUERY", { message: "Depth must be an integer from 1 to 6" });
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw unknownIdError(id);
 
     try {
       await ensureGraphAnalysis(analysis);
       const nodes = analysis.graph?.nodes ?? [];
       if (!nodes.some((node) => node.id === filePath))
-        return response.status(404).json({ error: "Path is not a graph node" });
+        throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not a graph node" });
 
       const blast = computeBlast(analysis.analysis?.reverseIndex, filePath, {
         maxDepth: rawDepth === undefined ? 4 : Number(rawDepth),
@@ -370,14 +375,13 @@ export function createAnalyzeRouter({
             : Math.round((blast.count / totalFiles) * 1000) / 10,
       });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/onboarding/:id", async (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw unknownIdError(request.params.id);
 
     if (
       repository.onboardingCache &&
@@ -416,11 +420,11 @@ export function createAnalyzeRouter({
       };
       return response.status(200).json(result);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
-  async function cloneAndBuild(url, { onState } = {}) {
+  async function probeRepositoryCache(url) {
     let remoteSha = null;
     try {
       remoteSha = await getRemoteShaImpl(url);
@@ -431,25 +435,68 @@ export function createAnalyzeRouter({
       );
     }
 
+    if (!remoteSha) {
+      const previousClone = cloneLocationForUrlImpl(url);
+      const staleCache = await loadLatestAnalysisCacheImpl(url);
+      if (staleCache) {
+        try {
+          if ((await stat(previousClone.dir)).isDirectory()) {
+            const graph = {
+              ...staleCache.graph,
+              meta: { ...staleCache.graph.meta, stale: true },
+              warnings: [
+                ...(staleCache.graph.warnings ?? []),
+                { file: null, message: "GitHub could not be reached; showing the last analysis" },
+              ],
+            };
+            return {
+              remoteSha: null,
+              remoteCache: staleCache,
+              repository: {
+                id: previousClone.id,
+                dir: previousClone.dir,
+                url,
+                sha: staleCache.sha,
+                graph,
+                analysis: staleCache.analysis,
+              },
+            };
+          }
+        } catch { /* Missing clone means stale cache cannot be served. */ }
+      }
+    }
+
     const remoteCache = remoteSha ? await loadCache(url, remoteSha) : null;
     if (remoteCache) {
       const previousClone = cloneLocationForUrlImpl(url);
       try {
         const previousSha = await getHeadShaImpl(previousClone.dir);
         if (previousSha === remoteSha) {
-          onState?.({ status: "ready", progress: { done: 0, total: 0 } });
-          return {
+          const repository = {
             id: previousClone.id,
             dir: previousClone.dir,
             url,
+            sha: remoteSha,
             graph: remoteCache.graph,
             analysis: remoteCache.analysis,
           };
+          return { remoteSha, remoteCache, repository };
         }
       } catch {
         // A missing or stale checkout simply means the request must clone.
       }
     }
+
+    return { remoteSha, remoteCache, repository: null };
+  }
+
+  async function cloneAndBuild(url, { onState, cacheProbe } = {}) {
+    const probe = cacheProbe ?? await probeRepositoryCache(url);
+    if (probe.repository) {
+      onState?.({ status: "ready", progress: { done: 0, total: 0 } });
+      return probe.repository;
+    }
+    const { remoteSha, remoteCache } = probe;
 
     let clonedRepository;
     try {
@@ -462,6 +509,11 @@ export function createAnalyzeRouter({
       id: clonedRepository.id,
       dir: clonedRepository.dir,
       url,
+      sha: clonedRepository.sha ?? null,
+      cloneInfo: {
+        defaultBranch: clonedRepository.defaultBranch ?? null,
+        shallow: clonedRepository.shallow === true,
+      },
       graph: null,
       analysis: null,
     };
@@ -484,6 +536,7 @@ export function createAnalyzeRouter({
     if (cloneCache) {
       repository.graph = cloneCache.graph;
       repository.analysis = cloneCache.analysis;
+      repository.sha = clonedSha;
       onState?.({ status: "ready", progress: { done: 0, total: 0 } });
       return repository;
     }
@@ -492,6 +545,7 @@ export function createAnalyzeRouter({
     repository.graph = built.graph;
     repository.analysis = built.analysis;
     const builtSha = clonedSha ?? built.graph?.sha;
+    repository.sha = builtSha ?? null;
     if (builtSha) {
       try {
         await saveAnalysisCacheImpl({
@@ -529,7 +583,7 @@ export function createAnalyzeRouter({
       const total = Math.min(
         files.filter((file) => /\.(?:js|jsx|ts|tsx|mjs|cjs)$/i.test(file))
           .length,
-        2000,
+        config.MAX_CODE_FILES,
       );
       onState?.({ status: "parsing", progress: { done: 0, total } });
       const buildOptions = {
@@ -567,13 +621,9 @@ function runZipUpload(request, response, next) {
       error instanceof multer.MulterError &&
       error.code === "LIMIT_FILE_SIZE"
     ) {
-      return response
-        .status(413)
-        .json({ error: "ZIP upload exceeds the 50 MB limit." });
+      return next(new NebulaError("UPLOAD_TOO_LARGE"));
     }
-    return response
-      .status(400)
-      .json({ error: "Upload exactly one file in the 'file' field." });
+    return next(new NebulaError("BAD_UPLOAD", { message: "Upload exactly one file in the 'file' field." }));
   });
 }
 
@@ -581,30 +631,29 @@ function isValidRepositoryUrl(url) {
   return typeof url === "string" && githubRepositoryUrl.test(url);
 }
 
-function sendPipelineError(response, error) {
-  const cause = error instanceof RepositoryPipelineError ? error.cause : error;
-  if (cause instanceof GraphError)
-    return response.status(cause.statusCode).json({ error: cause.message });
-
+function pipelineError(error) {
+  if (error instanceof NebulaError) return error;
+  if (error instanceof RepositoryPipelineError && error.cause instanceof NebulaError)
+    return error.cause;
+  if (error instanceof JobTimeoutError) return new NebulaError("JOB_TIMEOUT");
   if (error instanceof RepositoryPipelineError && error.stage === "clone") {
-    console.error("Repository clone failed:", cause?.message ?? String(cause));
-    return response
-      .status(500)
-      .json({ error: "Could not clone repo (private or not found?)" });
+    return new NebulaError("CLONE_FAILED", {
+      message: "Could not clone repo (private or not found?)",
+      cause: error.cause,
+    });
   }
-
-  console.error(
-    "Repository graph build failed:",
-    cause?.message ?? String(cause),
-  );
-  return response
-    .status(500)
-    .json({ error: "Could not build repository graph." });
+  if (error instanceof RepositoryPipelineError && error.stage === "build") {
+    return new NebulaError("INTERNAL", { message: "Could not build repository graph.", cause: error.cause });
+  }
+  return new NebulaError("INTERNAL", { cause: error });
 }
 
 function getJobErrorMessage(error) {
   if (error instanceof JobTimeoutError)
     return "Analysis job exceeded the 3 minute timeout.";
+  if (error instanceof NebulaError) return error.message;
+  if (error instanceof RepositoryPipelineError && error.cause instanceof NebulaError)
+    return error.cause.message;
   if (error instanceof RepositoryPipelineError && error.stage === "clone")
     return "Could not clone repository.";
   if (error instanceof RepositoryPipelineError && error.stage === "build")

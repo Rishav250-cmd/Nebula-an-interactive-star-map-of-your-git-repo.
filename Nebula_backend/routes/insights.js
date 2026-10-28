@@ -1,36 +1,25 @@
 import express from "express";
 import { computeHealth } from "../services/health.js";
 import { buildHeatmap } from "../services/heatmap.js";
-import { getAnalysis } from "../services/store.js";
+import { getAnalysis, unknownIdError } from "../services/store.js";
+import { NebulaError } from "../services/errors.js";
 
 export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
   const router = express.Router();
 
   // Shared checks: a valid id, a known analysis, and a built graph.
-  // Sends the error response itself and returns null when a check fails.
-  function loadBuiltAnalysis(request, response) {
+  function loadBuiltAnalysis(request) {
     const { id } = request.query;
-    if (typeof id !== "string" || id === "") {
-      response.status(400).json({ error: "The 'id' query parameter is required" });
-      return null;
-    }
+    if (typeof id !== "string" || id === "")
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     const analysis = getAnalysisImpl(id);
-    if (!analysis) {
-      response.status(404).json({ error: "Unknown repository id" });
-      return null;
-    }
-    if (!analysis.graph || !analysis.analysis) {
-      response.status(409).json({
-        error: "Analysis is not built yet. Call /api/graph/:id first.",
-      });
-      return null;
-    }
+    if (!analysis) throw unknownIdError(id);
+    if (!analysis.graph || !analysis.analysis) throw new NebulaError("ANALYSIS_NOT_READY");
     return analysis;
   }
 
   router.get("/health", (request, response) => {
-    const analysis = loadBuiltAnalysis(request, response);
-    if (!analysis) return;
+    const analysis = loadBuiltAnalysis(request);
 
     const health = computeHealth(analysis.graph, analysis.analysis, {
       hasHistory: analysis.hasHistory === true,
@@ -43,8 +32,7 @@ export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
   });
 
   router.get("/heatmap", (request, response) => {
-    const analysis = loadBuiltAnalysis(request, response);
-    if (!analysis) return;
+    const analysis = loadBuiltAnalysis(request);
 
     const hasHistory = analysis.hasHistory === true;
     const health = computeHealth(analysis.graph, analysis.analysis, { hasHistory });

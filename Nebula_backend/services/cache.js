@@ -9,14 +9,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { config } from "./config.js";
 
-export const ANALYSIS_VERSION = 4;
-export const MAX_CACHE_BYTES = 50 * 1024 * 1024;
-export const MAX_CACHE_FILES = 30;
+export const ANALYSIS_VERSION = 5;
+export const MAX_CACHE_BYTES = config.MAX_CACHE_MB * 1024 * 1024;
+export const MAX_CACHE_FILES = config.MAX_CACHE_FILES;
 
-const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
-export const ANALYSIS_CACHE_DIR = path.resolve(moduleDirectory, "../.cache");
+export const ANALYSIS_CACHE_DIR = config.CACHE_DIR;
 
 export function getAnalysisCachePath(
   repo,
@@ -54,6 +53,32 @@ export async function loadAnalysisCache(repo, sha, options = {}) {
     logCacheError("parse", error);
     return null;
   }
+}
+
+export async function loadLatestAnalysisCache(repo, options = {}) {
+  const cacheDir = options.cacheDir ?? ANALYSIS_CACHE_DIR;
+  const [owner, repository] = repositoryParts(repo);
+  const prefix = `${safeName(owner)}__${safeName(repository)}__`;
+  try {
+    const entries = await readdir(cacheDir, { withFileTypes: true });
+    const candidates = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const filePath = path.join(cacheDir, entry.name);
+        try { return { filePath, modified: (await stat(filePath)).mtimeMs }; }
+        catch { return null; }
+      }));
+    candidates.sort((a, b) => (b?.modified ?? 0) - (a?.modified ?? 0));
+    for (const candidate of candidates.filter(Boolean)) {
+      try {
+        const entry = JSON.parse(await readFile(candidate.filePath, "utf8"), mapReviver);
+        if (entry?.version === ANALYSIS_VERSION && entry.repo === repo && entry.graph && entry.analysis) return entry;
+      } catch { /* Skip invalid cache entries. */ }
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") logCacheError("read", error);
+  }
+  return null;
 }
 
 export async function saveAnalysisCache(

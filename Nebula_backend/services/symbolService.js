@@ -3,9 +3,10 @@ import path from "node:path";
 import { listFiles } from "./ingest.js";
 import { parseFile } from "./parser.js";
 import { getAnalysis } from "./store.js";
+import { config } from "./config.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
-const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_FILE_BYTES = config.MAX_FILE_BYTES;
 const fallbackCache = new WeakMap();
 
 /**

@@ -122,6 +122,67 @@ test("analysis cache ignores corrupted files and version mismatches", async () =
   }
 });
 
+test("remote failure serves stale cache only when its clone folder exists", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "nebula-stale-clone-"));
+  const graph = { repo: REPO_URL, sha: SHA_ONE, nodes: [], edges: [], cycles: [], warnings: [], meta: { stale: false } };
+  const analysis = { files: {} };
+  const app = createApp({
+    cloneLocationForUrlImpl: () => ({ id: "stale-cache", dir }),
+    getRemoteShaImpl: async () => null,
+    loadLatestAnalysisCacheImpl: async () => ({ sha: SHA_ONE, graph, analysis }),
+    cloneRepoImpl: async () => assert.fail("stale cache should avoid cloning"),
+  });
+  try {
+    await withServer(app, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/analyze`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: REPO_URL }),
+      });
+      assert.equal(response.status, 200);
+      const stored = getAnalysis("stale-cache");
+      assert.equal(stored.graph.meta.stale, true);
+      assert.ok(stored.graph.warnings.some((warning) => warning.message === "GitHub could not be reached; showing the last analysis"));
+    });
+
+    const noCacheApp = createApp({
+      cloneLocationForUrlImpl: () => ({ id: "stale-cache-missing", dir: path.join(dir, "missing") }),
+      getRemoteShaImpl: async () => null,
+      loadLatestAnalysisCacheImpl: async () => null,
+      cloneRepoImpl: async () => { throw new Error("offline"); },
+    });
+    await withServer(noCacheApp, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/analyze`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: REPO_URL }),
+      });
+      assert.equal(response.status, 502);
+      assert.equal((await response.json()).code, "CLONE_FAILED");
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ping reports runtime shape and CORS limits response origins", async () => {
+  const app = createApp({ corsOrigin: "https://allowed.example" });
+  await withServer(app, async (baseUrl) => {
+    const allowed = await fetch(`${baseUrl}/api/ping`, { headers: { Origin: "https://allowed.example" } });
+    const payload = await allowed.json();
+    assert.equal(allowed.headers.get("access-control-allow-origin"), "https://allowed.example");
+    assert.equal(allowed.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(allowed.headers.get("x-powered-by"), null);
+    assert.equal(payload.ok, true);
+    assert.equal(typeof payload.version, "string");
+    assert.equal(typeof payload.uptimeSec, "number");
+    assert.equal(typeof payload.rssMb, "number");
+    assert.equal(typeof payload.repos, "number");
+    assert.deepEqual(Object.keys(payload.queue), ["running", "waiting"]);
+    assert.deepEqual(Object.keys(payload.limits), ["maxCodeFiles", "maxRepoMb", "maxConcurrentJobs"]);
+    const denied = await fetch(`${baseUrl}/api/ping`, { headers: { Origin: "https://denied.example" } });
+    assert.equal(denied.headers.get("access-control-allow-origin"), null);
+  });
+});
+
 test("analysis cache skips entries larger than 50 MB", async () => {
   const cacheDir = path.join(os.tmpdir(), `nebula-cache-large-${process.pid}`);
   await rm(cacheDir, { recursive: true, force: true });

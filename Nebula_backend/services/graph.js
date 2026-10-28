@@ -6,11 +6,19 @@ import { buildReverseIndex, computeBlast } from "./blast.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
+import { config } from "./config.js";
+import { NebulaError } from "./errors.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
-const MAX_FILE_SIZE = 1024 * 1024;
-const MAX_CODE_FILES = 2000;
-const BATCH_SIZE = 50;
+const TIER_TWO_NAMES = new Set([
+  "test", "tests", "__tests__", "spec", "example", "examples", "docs", "doc",
+  "benchmark", "benchmarks", "fixtures", "e2e", "cypress", "stories", "__mocks__",
+  "mocks", "scripts",
+]);
+const ALWAYS_EXCLUDED_NAMES = new Set([
+  "vendor", "third_party", "node_modules", "dist", "build", "out", "target",
+  "coverage", ".next", "bower_components",
+]);
 const TOKEN_PATTERN = /[A-Za-z_$][\w$]*|\d+|[^\s\w]/g;
 
 export async function buildGraph({
@@ -22,76 +30,117 @@ export async function buildGraph({
   getChurnImpl = getChurn,
   onProgress,
 }) {
-  let sha;
-  try {
-    sha = (await simpleGit(dir).revparse(["HEAD"])).trim();
-  } catch (error) {
-    // Archives have no Git metadata, so use their upload ID as a stable snapshot marker.
-    if (typeof repoUrl !== "string" || !repoUrl.toLowerCase().endsWith(".zip"))
-      throw error;
-    sha = id;
-  }
-  const sortedCodeFiles = [...new Set(Array.isArray(files) ? files : [])]
-    .filter(
-      (file) =>
-        typeof file === "string" &&
-        CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()),
-    )
-    .sort((left, right) => left.localeCompare(right));
-  const selectedFiles = sortedCodeFiles.slice(0, MAX_CODE_FILES);
-  const warnings = [];
+  const startedAt = Date.now();
+  const snapshot = await getHistory(dir, repoUrl, id);
+  const history = snapshot.history;
+  const filePaths = [...new Set(Array.isArray(files) ? files : [])]
+    .filter((file) => typeof file === "string" && !isAlwaysExcluded(file));
+  const languages = countExtensions(filePaths);
+  const sortedCodeFiles = filePaths
+    .filter((file) => CODE_EXTENSIONS.has(path.posix.extname(file).toLowerCase()))
+    .sort((left, right) => tierFor(left) - tierFor(right) || left.localeCompare(right));
 
-  onProgress?.({
-    status: "parsing",
-    progress: { done: 0, total: selectedFiles.length },
-  });
-
-  if (sortedCodeFiles.length > MAX_CODE_FILES) {
-    warnings.push({
-      file: sortedCodeFiles[MAX_CODE_FILES],
-      message: `Repository has more than ${MAX_CODE_FILES} code files; only the first ${MAX_CODE_FILES} sorted paths were analyzed.`,
+  if (sortedCodeFiles.length === 0) {
+    throw new NebulaError("NO_SUPPORTED_FILES", {
+      hint: "Nebula currently analyzes JavaScript and TypeScript",
+      details: { languages: languages.slice(0, 5) },
     });
   }
 
-  const churnByFile = await getChurnImpl(dir);
+  const skipped = { large: 0, generated: 0, binary: 0 };
+  const warnings = [];
+  const sizedFiles = [];
+  for (const file of sortedCodeFiles) {
+    const metadata = await stat(path.join(dir, ...file.split("/")));
+    if (metadata.size > config.MAX_FILE_BYTES) {
+      skipped.large += 1;
+      warnings.push({ file, message: "Skipped file larger than 1 MB." });
+      continue;
+    }
+    sizedFiles.push({ file, size: metadata.size });
+  }
+
+  const selectedFiles = [];
+  const maxSourceBytes = config.MAX_SOURCE_MB * 1024 * 1024;
+  let totalSourceBytes = 0;
+  let truncatedReason = null;
+  for (let index = 0; index < sizedFiles.length; index += 1) {
+    if (selectedFiles.length >= config.MAX_CODE_FILES) {
+      if (index < sizedFiles.length) truncatedReason = "file-cap";
+      break;
+    }
+    const candidate = sizedFiles[index];
+    if (totalSourceBytes + candidate.size > maxSourceBytes) {
+      truncatedReason = "source-size";
+      break;
+    }
+    selectedFiles.push(candidate.file);
+    totalSourceBytes += candidate.size;
+  }
+  if (truncatedReason === "file-cap") {
+    warnings.push({
+      file: sizedFiles[selectedFiles.length]?.file ?? sortedCodeFiles[selectedFiles.length],
+      message: `Repository has more than ${config.MAX_CODE_FILES} code files; only the first ${config.MAX_CODE_FILES} sorted paths were analyzed.`,
+    });
+  }
+
+  onProgress?.({ status: "parsing", progress: { done: 0, total: selectedFiles.length } });
+
+  const churnMap = await getChurnImpl(dir);
   const aliases = await loadAliases(dir);
-  const churnMap = await getChurn(dir);
   const parsedFiles = [];
   const analysis = { files: {}, aliases, churn: churnMap };
+  let processedCount = 0;
+  let memoryLimited = false;
 
-  for (let offset = 0; offset < selectedFiles.length; offset += BATCH_SIZE) {
-    const batch = selectedFiles.slice(offset, offset + BATCH_SIZE);
+  for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
+    const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
     const results = await Promise.all(
       batch.map((file) => readAndParseFile(dir, file, parseFileImpl)),
     );
 
     for (const result of results) {
-      if (result.warning) {
-        warnings.push(result.warning);
-      } else {
-        if (result.error)
-          warnings.push({ file: result.path, message: result.error });
-        analysis.files[result.path] = {
-          functions: result.functions,
-          calls: result.calls,
-          bindings: result.bindings,
-          complexity: result.complexity,
-        };
-        parsedFiles.push(result);
+      processedCount += 1;
+      if (result.skip === "large") {
+        skipped.large += 1;
+        warnings.push({ file: result.path, message: "Skipped file larger than 1 MB." });
+        continue;
       }
+      if (result.skip === "generated") {
+        skipped.generated += 1;
+        continue;
+      }
+      if (result.skip === "binary") {
+        skipped.binary += 1;
+        continue;
+      }
+      if (result.error) warnings.push({ file: result.path, message: result.error });
+      analysis.files[result.path] = {
+        functions: result.functions,
+        calls: result.calls,
+        bindings: result.bindings,
+        complexity: result.complexity,
+      };
+      parsedFiles.push(result);
     }
     onProgress?.({
       status: "parsing",
-      progress: {
-        done: Math.min(offset + batch.length, selectedFiles.length),
-        total: selectedFiles.length,
-      },
+      progress: { done: processedCount, total: selectedFiles.length },
     });
+
+    if (
+      processedCount < selectedFiles.length
+      && process.memoryUsage().rss > config.MAX_RSS_MB * 1024 * 1024
+    ) {
+      memoryLimited = true;
+      break;
+    }
   }
 
+  if (memoryLimited) truncatedReason = "memory";
   onProgress?.({
     status: "graph",
-    progress: { done: selectedFiles.length, total: selectedFiles.length },
+    progress: { done: processedCount, total: selectedFiles.length },
   });
 
   const nodes = parsedFiles.map(({ path: filePath, source }) => ({
@@ -117,11 +166,8 @@ export async function buildGraph({
 
   for (const { path: sourcePath, imports } of parsedFiles) {
     for (const { specifier } of imports) {
-      const targetPath = resolveImport(specifier, sourcePath, nodeIds, {
-        aliases,
-      });
+      const targetPath = resolveImport(specifier, sourcePath, nodeIds, { aliases });
       if (!targetPath) continue;
-
       const edgeKey = `${sourcePath}\0${targetPath}`;
       if (edgeKeys.has(edgeKey)) continue;
       edgeKeys.add(edgeKey);
@@ -130,11 +176,8 @@ export async function buildGraph({
   }
 
   edges.sort(
-    (left, right) =>
-      left.source.localeCompare(right.source) ||
-      left.target.localeCompare(right.target),
+    (left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target),
   );
-
   const cycles = findCycles(nodes, edges);
   const cycleByFile = new Map();
   cycles.forEach((cycle, cycleIndex) => {
@@ -143,7 +186,6 @@ export async function buildGraph({
       nodesById.get(file).inCycle = true;
     }
   });
-
   for (const edge of edges) {
     const sourceCycle = cycleByFile.get(edge.source);
     const targetCycle = cycleByFile.get(edge.target);
@@ -161,33 +203,65 @@ export async function buildGraph({
   }
   analysis.reverseIndex = reverseIndex;
 
+  const parsedPaths = new Set(parsedFiles.map(({ path: filePath }) => filePath));
+  const excludedTests = sortedCodeFiles.filter(
+    (file) => tierFor(file) === 2 && !parsedPaths.has(file),
+  ).length;
+  const meta = {
+    totalCodeFiles: sortedCodeFiles.length,
+    analyzedFiles: nodes.length,
+    truncated: truncatedReason !== null,
+    truncatedReason,
+    excludedTests,
+    skipped,
+    languages,
+    noEdges: nodes.length > 0 && edges.length === 0,
+    churnAvailable: history.depth > 0 && !history.shallow,
+    history,
+    stale: false,
+    analysisMs: Date.now() - startedAt,
+  };
+
   return {
-    graph: {
-      repo: repoUrl,
-      sha,
-      nodes,
-      edges,
-      cycles,
-      warnings,
-    },
+    graph: { repo: repoUrl, sha: snapshot.sha, nodes, edges, cycles, warnings, meta },
     analysis,
   };
+}
+
+async function getHistory(dir, repoUrl, id) {
+  try {
+    const git = simpleGit(dir);
+    const [sha, shallowValue, depthValue] = await Promise.all([
+      git.revparse(["HEAD"]),
+      git.raw(["rev-parse", "--is-shallow-repository"]),
+      git.raw(["rev-list", "--count", "HEAD"]),
+    ]);
+    return {
+      sha: sha.trim(),
+      history: {
+        shallow: shallowValue.trim().toLowerCase() === "true",
+        depth: Number.parseInt(depthValue.trim(), 10) || 0,
+      },
+    };
+  } catch (error) {
+    if (typeof repoUrl === "string" && repoUrl.toLowerCase().endsWith(".zip")) {
+      return { sha: id, history: { shallow: false, depth: 0 } };
+    }
+    throw error;
+  }
 }
 
 async function readAndParseFile(dir, filePath, parseFileImpl) {
   const diskPath = path.join(dir, ...filePath.split("/"));
   const metadata = await stat(diskPath);
+  if (metadata.size > config.MAX_FILE_BYTES) return { path: filePath, skip: "large" };
 
-  if (metadata.size > MAX_FILE_SIZE) {
-    return {
-      path: filePath,
-      warning: { file: filePath, message: "Skipped file larger than 1 MB." },
-    };
-  }
+  const buffer = await readFile(diskPath);
+  if (buffer.subarray(0, 1000).includes(0)) return { path: filePath, skip: "binary" };
+  const source = buffer.toString("utf8").replace(/^\uFEFF/, "");
+  if (isGeneratedSource(source)) return { path: filePath, skip: "generated" };
 
-  const source = await readFile(diskPath, "utf8");
   const parsed = parseFileImpl(source, filePath);
-
   return {
     path: filePath,
     source,
@@ -200,7 +274,49 @@ async function readAndParseFile(dir, filePath, parseFileImpl) {
   };
 }
 
+function isGeneratedSource(source) {
+  if (/@generated|DO NOT EDIT/i.test(source.slice(0, 300))) return true;
+  const lines = source.split(/\r\n|\r|\n/);
+  if (lines.some((line) => line.length > 5000)) return true;
+  const averageLineLength = lines.reduce((sum, line) => sum + line.length, 0) / Math.max(lines.length, 1);
+  return averageLineLength > 400;
+}
+
+function tierFor(filePath) {
+  const segments = filePath.replaceAll("\\", "/").split("/").map((segment) => segment.toLowerCase());
+  const fileName = segments.at(-1) ?? "";
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  if (segments.some((segment) => TIER_TWO_NAMES.has(segment))) return 2;
+  if (TIER_TWO_NAMES.has(stem)) return 2;
+  if (stem.split(/[._-]+/).some((part) => TIER_TWO_NAMES.has(part))) return 2;
+  if (/\.(?:test|spec|example|benchmark|fixture|stories|mock|e2e|cypress)\./i.test(fileName)) return 2;
+  return 1;
+}
+
+function isAlwaysExcluded(filePath) {
+  const normalized = filePath.replaceAll("\\", "/");
+  const segments = normalized.split("/").filter(Boolean).map((segment) => segment.toLowerCase());
+  const name = segments.at(-1) ?? "";
+  return segments.some((segment) => ALWAYS_EXCLUDED_NAMES.has(segment))
+    || /\.(?:min|bundle|chunk)(?:\.[^.]+)?$/i.test(name);
+}
+
+function countExtensions(filePaths) {
+  const counts = new Map();
+  for (const file of filePaths) {
+    const ext = path.posix.extname(file).toLowerCase() || "(no extension)";
+    counts.set(ext, (counts.get(ext) ?? 0) + 1);
+  }
+  return topExtensions(counts, Number.POSITIVE_INFINITY);
+}
+
+function topExtensions(counts, limit) {
+  return [...counts.entries()]
+    .map(([ext, count]) => ({ ext, count }))
+    .sort((left, right) => right.count - left.count || left.ext.localeCompare(right.ext))
+    .slice(0, limit);
+}
+
 function countNonEmptyLines(source) {
-  return source.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0)
-    .length;
+  return source.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
 }

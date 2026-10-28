@@ -118,7 +118,7 @@ test("POST /api/analyze rejects invalid GitHub URLs", async () => {
     });
 
     assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: "Invalid GitHub URL" });
+    assert.equal((await response.json()).error, "Invalid GitHub URL");
   });
 });
 
@@ -137,10 +137,8 @@ test("POST /api/analyze returns an error when cloning fails", async () => {
       body: JSON.stringify({ url: "https://github.com/octocat/demo" }),
     });
 
-    assert.equal(response.status, 500);
-    assert.deepEqual(await response.json(), {
-      error: "Could not clone repo (private or not found?)",
-    });
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).error, "Could not clone repo (private or not found?)");
   });
 });
 
@@ -151,7 +149,7 @@ test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => 
     const response = await fetch(`${baseUrl}/api/graph/missing-analysis`);
 
     assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), { error: "Unknown repository id" });
+    assert.equal((await response.json()).error, "Unknown repository id");
   });
 });
 
@@ -392,9 +390,7 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
       Buffer.from("not a zip"),
     );
     assert.equal(nonZip.status, 400);
-    assert.deepEqual(await nonZip.json(), {
-      error: "Only .zip files are accepted.",
-    });
+    assert.equal((await nonZip.json()).error, "Only .zip files are accepted.");
   });
 });
 
