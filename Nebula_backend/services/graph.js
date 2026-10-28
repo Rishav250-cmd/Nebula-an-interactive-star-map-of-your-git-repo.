@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import { getChurn } from "./churn.js";
+import { buildReverseIndex, computeBlast } from "./blast.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
@@ -132,6 +133,15 @@ export async function buildGraph({
     nodesById.get(edge.source).fanOut += 1;
     nodesById.get(edge.target).fanIn += 1;
   }
+
+  const reverseIndex = buildReverseIndex(edges);
+  for (const node of nodes) {
+    node.blastRadius = computeBlast(reverseIndex, node.id, {
+      maxDepth: 4,
+      cap: Number.POSITIVE_INFINITY,
+    }).count;
+  }
+  analysis.reverseIndex = reverseIndex;
 
   return {
     graph: {
