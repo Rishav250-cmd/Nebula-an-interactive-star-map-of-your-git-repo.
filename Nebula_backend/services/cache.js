@@ -55,6 +55,32 @@ export async function loadAnalysisCache(repo, sha, options = {}) {
   }
 }
 
+export async function loadLatestAnalysisCache(repo, options = {}) {
+  const cacheDir = options.cacheDir ?? ANALYSIS_CACHE_DIR;
+  const [owner, repository] = repositoryParts(repo);
+  const prefix = `${safeName(owner)}__${safeName(repository)}__`;
+  try {
+    const entries = await readdir(cacheDir, { withFileTypes: true });
+    const candidates = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".json"))
+      .map(async (entry) => {
+        const filePath = path.join(cacheDir, entry.name);
+        try { return { filePath, modified: (await stat(filePath)).mtimeMs }; }
+        catch { return null; }
+      }));
+    candidates.sort((a, b) => (b?.modified ?? 0) - (a?.modified ?? 0));
+    for (const candidate of candidates.filter(Boolean)) {
+      try {
+        const entry = JSON.parse(await readFile(candidate.filePath, "utf8"), mapReviver);
+        if (entry?.version === ANALYSIS_VERSION && entry.repo === repo && entry.graph && entry.analysis) return entry;
+      } catch { /* Skip invalid cache entries. */ }
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") logCacheError("read", error);
+  }
+  return null;
+}
+
 export async function saveAnalysisCache(
   { repo, sha, graph, analysis },
   { cacheDir = ANALYSIS_CACHE_DIR } = {},

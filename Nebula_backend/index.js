@@ -9,7 +9,7 @@ import {
 
 installProcessErrorHandlers();
 
-await clearRepositoryDirectory();
+if (!config.REPO_DIR_EXPLICIT) await clearRepositoryDirectory();
 await initializeStore();
 startStoreMaintenance();
 

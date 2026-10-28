@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { rm } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
 import { extractZipArchive } from "../services/archive.js";
 import {
@@ -14,7 +15,7 @@ import { buildCallGraph } from "../services/callgraph.js";
 import { computeBlast } from "../services/blast.js";
 import { fetchGoodFirstIssues, parseGitHubRepo } from "../services/github.js";
 import { buildOnboarding } from "../services/onboarding.js";
-import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
+import { loadAnalysisCache, loadLatestAnalysisCache, saveAnalysisCache } from "../services/cache.js";
 import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
 import {
   cacheAnalysisGraph,
@@ -44,6 +45,7 @@ export function createAnalyzeRouter({
   getRemoteShaImpl = getRemoteHeadSha,
   getHeadShaImpl = getHeadSha,
   loadAnalysisCacheImpl = loadAnalysisCache,
+  loadLatestAnalysisCacheImpl = loadLatestAnalysisCache,
   saveAnalysisCacheImpl = saveAnalysisCache,
   parseFileImpl,
   listFilesImpl = listFiles,
@@ -431,6 +433,37 @@ export function createAnalyzeRouter({
         "Could not check remote repository SHA:",
         error?.message ?? String(error),
       );
+    }
+
+    if (!remoteSha) {
+      const previousClone = cloneLocationForUrlImpl(url);
+      const staleCache = await loadLatestAnalysisCacheImpl(url);
+      if (staleCache) {
+        try {
+          if ((await stat(previousClone.dir)).isDirectory()) {
+            const graph = {
+              ...staleCache.graph,
+              meta: { ...staleCache.graph.meta, stale: true },
+              warnings: [
+                ...(staleCache.graph.warnings ?? []),
+                { file: null, message: "GitHub could not be reached; showing the last analysis" },
+              ],
+            };
+            return {
+              remoteSha: null,
+              remoteCache: staleCache,
+              repository: {
+                id: previousClone.id,
+                dir: previousClone.dir,
+                url,
+                sha: staleCache.sha,
+                graph,
+                analysis: staleCache.analysis,
+              },
+            };
+          }
+        } catch { /* Missing clone means stale cache cannot be served. */ }
+      }
     }
 
     const remoteCache = remoteSha ? await loadCache(url, remoteSha) : null;

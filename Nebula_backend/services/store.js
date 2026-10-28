@@ -73,6 +73,10 @@ export function getAnalysis(id) {
   return entry;
 }
 
+export function getRepositoryCount() {
+  return analyses.size;
+}
+
 export function unknownIdError(id) {
   const stored = knownIds.get(id);
   return new NebulaError("UNKNOWN_ID", {
@@ -129,6 +133,7 @@ export async function pruneRepositoryStore({
   now = Date.now(),
   ttlMinutes = config.REPO_TTL_MIN,
 } = {}) {
+  if (config.REPO_DIR_EXPLICIT) return;
   const expiry = ttlMinutes * 60 * 1000;
   const expired = [...analyses.values()].filter((entry) =>
     entry.dir && !isJobActive(entry) && now - (entry.lastAccess ?? 0) >= expiry,

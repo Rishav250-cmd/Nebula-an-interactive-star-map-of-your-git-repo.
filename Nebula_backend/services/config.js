@@ -14,6 +14,7 @@ export const config = Object.freeze({
   PORT: numberFromEnv("PORT", 5001),
   CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
   REPO_DIR: path.resolve(process.env.REPO_DIR || path.join(os.tmpdir(), "nebula")),
+  REPO_DIR_EXPLICIT: Boolean(process.env.REPO_DIR?.trim()),
   CACHE_DIR: path.resolve(process.env.CACHE_DIR || path.join(backendDirectory, ".cache")),
   MAX_CODE_FILES: numberFromEnv("MAX_CODE_FILES", 2000),
   PARSE_BATCH_SIZE: numberFromEnv("PARSE_BATCH_SIZE", 50),
