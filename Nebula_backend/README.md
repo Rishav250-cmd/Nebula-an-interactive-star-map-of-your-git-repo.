@@ -12,6 +12,8 @@ npm run dev
 
 The server listens on port `5000` by default. Set `PORT` in `.env` to use a different port.
 
+Good-first-issue suggestions use the public GitHub API. Set `GITHUB_TOKEN` in `.env` to an optional GitHub token to increase API rate limits; `.env.example` includes the empty setting.
+
 ## Mock and status endpoints
 
 `GET /api/ping` returns HTTP `200` when the API is running:

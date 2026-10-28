@@ -187,7 +187,9 @@ export function createAnalyzeRouter({
       rawDepth !== undefined &&
       (typeof rawDepth !== "string" || !/^[1-6]$/.test(rawDepth))
     ) {
-      return response.status(400).json({ error: "Depth must be an integer from 1 to 6" });
+      return response
+        .status(400)
+        .json({ error: "Depth must be an integer from 1 to 6" });
     }
 
     const analysis = getAnalysisImpl(id);
