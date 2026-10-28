@@ -18,7 +18,11 @@ import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 import { buildAdjacency } from '../lib/graphHighlight';
 import { fetchHealth } from '../api/client';
 import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
-import { graphPerformanceForNodeCount } from '../lib/graphPerformance';
+import {
+  GRAPH_PERFORMANCE_THRESHOLDS,
+  graphPerformanceForNodeCount,
+} from '../lib/graphPerformance';
+import { buildFolderGraphData, topLevelFolder } from '../lib/folderGraph';
 type GraphInstance = ForceGraphMethods<
   NodeObject<GraphNode>,
   LinkObject<GraphNode, GraphEdge>
@@ -135,10 +139,14 @@ export function GraphCanvas() {
   const handledFocusRequest = useRef(focusRequest);
   const labelBounds = useRef(new Float32Array(0));
   const labelBoundsCount = useRef(0);
+  const renderedNodes = useRef<NodeObject<GraphNode>[]>([]);
   const cyclePulseAlpha = useRef(0.35);
   const handledSymbolFocusRequest = useRef(focusRequest);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
+  const [groupByFolderOverride, setGroupByFolderOverride] = useState<boolean | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const nodePositions = useRef(new Map<string, { x: number; y: number }>());
 
   useEffect(() => {
     if (!analysisId) {
@@ -157,29 +165,91 @@ export function GraphCanvas() {
 
   // The graph without the files hidden in the filter panel (same object when no filter is active).
   const visibleGraph = useMemo(() => applyFilters(graph, filters), [graph, filters]);
+  const groupByFolder = groupByFolderOverride
+    ?? ((graph?.nodes.length ?? 0) > GRAPH_PERFORMANCE_THRESHOLDS.simplifiedRendering);
+
+  const rememberNodePositions = useCallback(() => {
+    for (const node of renderedNodes.current) {
+      if (
+        node.id !== undefined
+        && typeof node.x === 'number' && Number.isFinite(node.x)
+        && typeof node.y === 'number' && Number.isFinite(node.y)
+      ) nodePositions.current.set(String(node.id), { x: node.x, y: node.y });
+    }
+  }, []);
+
+  const toggleFolderExpansion = useCallback((folder: string) => {
+    rememberNodePositions();
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
+  }, [rememberNodePositions]);
+
+  const toggleFolderGrouping = useCallback(() => {
+    rememberNodePositions();
+    setExpandedFolders(new Set());
+    setGroupByFolderOverride(!groupByFolder);
+  }, [groupByFolder, rememberNodePositions]);
+
+  useEffect(() => {
+    nodePositions.current.clear();
+    setExpandedFolders((current) => current.size === 0 ? current : new Set());
+    setGroupByFolderOverride(null);
+  }, [graph]);
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
       // ForceGraph mutates nodes and links with simulation coordinates.
-      const nodes = visibleGraph?.nodes
-        .map((node) => ({ ...node }))
-        .sort((left, right) => (
-          nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
-        )) ?? [];
+      const fileNodes = visibleGraph?.nodes ?? [];
+      let nodes: NodeObject<GraphNode>[];
+      let links: GraphEdge[];
+
+      if (!groupByFolder) {
+        nodes = fileNodes.map((node) => {
+          const position = nodePositions.current.get(node.id);
+          return position ? { ...node, ...position } : { ...node };
+        });
+        links = visibleGraph?.edges ?? [];
+      } else {
+        const grouped = buildFolderGraphData(
+          fileNodes,
+          visibleGraph?.edges ?? [],
+          expandedFolders,
+          nodePositions.current,
+        );
+        nodes = grouped.nodes;
+        links = grouped.links;
+      }
+
+      nodes.sort((left, right) => (
+        nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
+      ));
       const nodeIds = new Set(nodes.map((node) => node.id));
       return {
         nodes,
-        links: uniqueLinks(visibleGraph?.edges ?? [], nodeIds),
+        links: uniqueLinks(links, nodeIds),
       };
     },
-    [visibleGraph],
+    [expandedFolders, groupByFolder, visibleGraph],
   );
-  const performanceMode = graphPerformanceForNodeCount(graphData.nodes.length);
+  renderedNodes.current = graphData.nodes;
+  const performanceNodeCount = Math.max(
+    graphData.nodes.length,
+    groupByFolder ? graph?.nodes.length ?? 0 : 0,
+  );
+  const performanceMode = graphPerformanceForNodeCount(performanceNodeCount);
   const nodeRenderData = useMemo(() => new Map(graphData.nodes.map((node) => [
     node.id,
     {
-      radius: nodeRadius(node.loc),
-      label: truncateLabel(node.id.split('/').pop() ?? ''),
+      radius: node.isFolderGroup
+        ? Math.min(28, 9 + Math.sqrt(Math.max(0, node.loc)) * 0.08)
+        : nodeRadius(node.loc),
+      label: truncateLabel(node.isFolderGroup
+        ? `${node.folder === '.' ? 'Root' : node.folder} · ${node.fileCount ?? 0}`
+        : node.id.split('/').pop() ?? ''),
     },
   ] as const)), [graphData]);
   const truncatedCounts = graph?.meta?.truncated
@@ -198,17 +268,34 @@ export function GraphCanvas() {
     [...new Set(allFolders)].map((folder) => [folder, folderColor(folder, allFolders)] as const),
   ), [allFolders]);
   const colorById = useMemo(() => new Map(
-    graph?.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const) ?? [],
-  ), [colorByFolder, graph]);
+    graphData.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const),
+  ), [colorByFolder, graphData]);
   const healthById = useMemo(() => new Map(
     healthReport?.files.map((file) => [file.id, file] as const) ?? [],
   ), [healthReport]);
+  const graphNodeById = useMemo(() => new Map(
+    graph?.nodes.map((node) => [node.id, node] as const) ?? [],
+  ), [graph]);
   const healthScoreById = useMemo(() => new Map(
-    graph?.nodes.map((node) => [
-      node.id,
-      healthById.get(node.id)?.healthScore ?? node.healthScore ?? null,
-    ] as const) ?? [],
-  ), [graph, healthById]);
+    graphData.nodes.map((node) => {
+      if (node.isFolderGroup) {
+        let scoreTotal = 0;
+        let scoreCount = 0;
+        for (const memberId of node.memberIds ?? []) {
+          const score = healthById.get(memberId)?.healthScore
+            ?? graphNodeById.get(memberId)?.healthScore;
+          if (score === null || score === undefined) continue;
+          scoreTotal += score;
+          scoreCount += 1;
+        }
+        return [node.id, scoreCount > 0 ? scoreTotal / scoreCount : null] as const;
+      }
+      return [
+        node.id,
+        healthById.get(node.id)?.healthScore ?? node.healthScore ?? null,
+      ] as const;
+    }),
+  ), [graphData, graphNodeById, healthById]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
@@ -313,9 +400,9 @@ export function GraphCanvas() {
   }, [visibleGraph]);
 
   useEffect(() => {
-    if (!hasFittedGraph.current || graphData.nodes.length === 0) return;
+    if (groupByFolder || !hasFittedGraph.current || graphData.nodes.length === 0) return;
     graphRef.current?.zoomToFit(600, 60);
-  }, [canvasSize.height, canvasSize.width, graphData.nodes.length]);
+  }, [canvasSize.height, canvasSize.width, graphData.nodes.length, groupByFolder]);
 
   useEffect(() => {
     const graphInstance = graphRef.current;
@@ -332,16 +419,35 @@ export function GraphCanvas() {
     }
   }, [graph, graphData, nodeRenderData]);
 
+  const groupLayoutKey = `${groupByFolder ? 'grouped' : 'files'}:${[...expandedFolders].sort().join('|')}`;
+  const previousGroupLayoutKey = useRef(groupLayoutKey);
+  useEffect(() => {
+    if (previousGroupLayoutKey.current === groupLayoutKey) return;
+    previousGroupLayoutKey.current = groupLayoutKey;
+    graphRef.current?.d3ReheatSimulation();
+  }, [groupLayoutKey]);
+
   useEffect(() => {
     if (
       focusRequest === handledFocusRequest.current
       || !selectedId
       || graphData.nodes.length === 0
+      || viewMode === 'function'
     ) return;
-    handledFocusRequest.current = focusRequest;
+
+    const selectedFile = graph?.nodes.find((candidate) => candidate.id === selectedId);
+    if (groupByFolder && selectedFile) {
+      const folder = topLevelFolder(selectedFile.folder);
+      if (!expandedFolders.has(folder)) {
+        rememberNodePositions();
+        setExpandedFolders((current) => new Set(current).add(folder));
+        return;
+      }
+    }
 
     const node = graphData.nodes.find((candidate) => candidate.id === selectedId);
     if (!node) return;
+    handledFocusRequest.current = focusRequest;
 
     const startedAt = performance.now();
     let lastX: number | null = null;
@@ -372,7 +478,7 @@ export function GraphCanvas() {
 
     frameId = requestAnimationFrame(focusSelectedNode);
     return () => cancelAnimationFrame(frameId);
-  }, [focusRequest, graphData.nodes, selectedId]);
+  }, [expandedFolders, focusRequest, graph, graphData.nodes, groupByFolder, rememberNodePositions, selectedId, viewMode]);
 
   useEffect(() => {
     if (selectedCycleIndex === null) return;
@@ -623,7 +729,9 @@ export function GraphCanvas() {
   const getLinkWidth = useCallback((link: LinkEndpoints) => {
     if (performanceMode.tier !== 'full') {
       if (hasActiveFocus && !isHighlightedLink(link)) return 0.3;
-      return link.inCycle === true && cyclesVisible ? 1.05 : 0.45;
+      const aggregateCount = typeof link.aggregateCount === 'number' ? link.aggregateCount : 1;
+      const aggregateWidth = 0.4 + Math.log2(aggregateCount) * 0.14;
+      return Math.min(link.inCycle === true && cyclesVisible ? 1.2 : 1, aggregateWidth);
     }
     if (hasActiveFocus && !isHighlightedLink(link)) return 0.35;
     if (link.inCycle === true && cyclesVisible) return 1.9;
@@ -762,6 +870,16 @@ export function GraphCanvas() {
         >
           Cycles
         </button>
+        <button
+          type="button"
+          className="folder-group-toggle"
+          aria-pressed={groupByFolder}
+          disabled={viewMode === 'function'}
+          title="Show one node per top-level folder"
+          onClick={toggleFolderGrouping}
+        >
+          Group by folder
+        </button>
       </div>
       )}
       {phase === 'idle' && !graph && (
@@ -819,7 +937,9 @@ export function GraphCanvas() {
           onEngineStop={handleEngineStop}
           onNodeHover={handleNodeHover}
           onNodeClick={(node) => {
-            if (node.id != null) focusNode(String(node.id));
+            if ((node as GraphNode).isFolderGroup) {
+              toggleFolderExpansion((node as GraphNode).folder);
+            } else if (node.id != null) focusNode(String(node.id));
             else clearFocus();
           }}
           onBackgroundClick={clearFocus}

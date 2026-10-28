@@ -1040,6 +1040,18 @@
   background: rgb(108 77 246 / 25%);
 }
 
+.edge-toggle-toolbar button.folder-group-toggle {
+  margin-left: 3px;
+  border-left: 1px solid rgb(148 163 184 / 18%);
+  border-radius: 0 6px 6px 0;
+  color: #c4b5fd;
+  white-space: nowrap;
+}
+
+.edge-toggle-toolbar button.folder-group-toggle[aria-pressed="true"]:not(:disabled) {
+  color: #f8fafc;
+}
+
 .edge-toggle-toolbar button:disabled {
   color: #68758a;
   cursor: not-allowed;

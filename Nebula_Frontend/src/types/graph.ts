@@ -11,6 +11,9 @@ export type GraphNode = {
   fanIn: number;
   fanOut: number;
   functionCount?: number;
+  isFolderGroup?: boolean;
+  fileCount?: number;
+  memberIds?: string[];
 };
 
 export type GraphEdge = {
@@ -18,6 +21,7 @@ export type GraphEdge = {
   target: string;
   type: 'import' | 'call';
   inCycle?: boolean;
+  aggregateCount?: number;
 };
 
 export type CallGraphNode = {
