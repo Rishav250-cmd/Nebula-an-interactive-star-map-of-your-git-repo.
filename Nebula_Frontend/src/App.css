@@ -1852,13 +1852,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-@container (min-width: 801px) {
+@container (min-width: 621px) {
   .graph-canvas--interactive > .graph-view-switch {
     left: 25%;
     transform: translateX(-50%);
   }
 
   .graph-canvas--interactive .edge-toggle-toolbar {
+    top: 9px;
     right: auto;
     left: 75%;
     transform: translateX(-50%);
@@ -1866,7 +1867,7 @@
   }
 }
 
-@container (max-width: 800px) {
+@container (max-width: 620px) {
   .graph-canvas--interactive .graph-view-switch {
     left: 8px;
     right: 8px;
