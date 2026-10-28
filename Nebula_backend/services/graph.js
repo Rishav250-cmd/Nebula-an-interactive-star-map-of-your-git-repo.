@@ -31,6 +31,7 @@ export async function buildGraph({
   getChurnImpl = getChurn,
   onProgress,
   onTiming,
+  deferChurn = false,
 }) {
   const startedAt = Date.now();
   const snapshot = await getHistory(dir, repoUrl, id);
@@ -49,7 +50,7 @@ export async function buildGraph({
     });
   }
 
-  const skipped = { large: 0, generated: 0, binary: 0 };
+  const skipped = { large: Number(files?.skippedOversize) || 0, generated: 0, binary: 0 };
   const warnings = [];
   const sizedFiles = [];
   for (const file of sortedCodeFiles) {
@@ -89,8 +90,8 @@ export async function buildGraph({
   onProgress?.({ status: "parsing", progress: { done: 0, total: selectedFiles.length } });
 
   const churnStartedAt = startTimer();
-  const churnMap = await getChurnImpl(dir);
-  reportTiming("churn", elapsedMs(churnStartedAt));
+  const churnMap = deferChurn ? new Map() : await getChurnImpl(dir);
+  if (!deferChurn) reportTiming("churn", elapsedMs(churnStartedAt));
   const aliases = await loadAliases(dir);
   const parsedFiles = [];
   const analysis = { files: {}, aliases, churn: churnMap };
@@ -307,6 +308,7 @@ function tierFor(filePath) {
   if (TIER_TWO_NAMES.has(stem)) return 2;
   if (stem.split(/[._-]+/).some((part) => TIER_TWO_NAMES.has(part))) return 2;
   if (/\.(?:test|spec|example|benchmark|fixture|stories|mock|e2e|cypress)\./i.test(fileName)) return 2;
+  if (segments.some((segment) => ["src", "lib", "app"].includes(segment))) return 0;
   return 1;
 }
 

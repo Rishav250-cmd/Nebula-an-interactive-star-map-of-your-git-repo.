@@ -22,7 +22,7 @@ export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
     const analysis = loadBuiltAnalysis(request);
 
     const health = computeHealth(analysis.graph, analysis.analysis, {
-      hasHistory: analysis.hasHistory === true,
+      hasHistory: analysis.hasHistory === true || analysis.graph.meta?.churnAvailable === true,
     });
     const limit = Math.min(Number(request.query.limit) || 100, 50000);
     return response.status(200).json({
@@ -34,7 +34,7 @@ export function createInsightsRouter({ getAnalysisImpl = getAnalysis } = {}) {
   router.get("/heatmap", (request, response) => {
     const analysis = loadBuiltAnalysis(request);
 
-    const hasHistory = analysis.hasHistory === true;
+    const hasHistory = analysis.hasHistory === true || analysis.graph.meta?.churnAvailable === true;
     const health = computeHealth(analysis.graph, analysis.analysis, { hasHistory });
     return response.status(200).json(buildHeatmap(health.files, { hasHistory }));
   });

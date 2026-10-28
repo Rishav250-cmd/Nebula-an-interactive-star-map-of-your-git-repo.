@@ -5,35 +5,11 @@ import path from "node:path";
 import { NebulaError } from "./errors.js";
 import { config } from "./config.js";
 import { parseGitHubRepo } from "./github.js";
+import { shouldIgnore } from "../ignore.js";
 
 const preflightCache = new Map();
 const PREFLIGHT_TTL_MS = 10 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 5 * 1000;
-
-const skippedDirectories = new Set([
-  "node_modules",
-  ".git",
-  "vendor",
-  "third_party",
-  "dist",
-  "build",
-  "out",
-  "target",
-  ".next",
-  "coverage",
-  "bower_components",
-]);
-const skippedExtensions = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".svg",
-  ".ico",
-  ".pdf",
-  ".woff",
-  ".woff2",
-]);
 
 export function cloneLocationForUrl(url) {
   const id = repoIdFor(url);
@@ -76,7 +52,7 @@ export async function cloneRepo(url, {
     } catch {
       throw new NebulaError("EMPTY_REPO");
     }
-    if (!sha || (await listFiles(dir)).length === 0)
+    if (!sha)
       throw new NebulaError("EMPTY_REPO");
 
     let defaultBranch = null;
@@ -100,9 +76,12 @@ export async function cloneRepo(url, {
   }
 }
 
-export async function listFiles(root) {
+export async function listFiles(root, {
+  maxFileBytes = config.MAX_ANALYSIS_FILE_BYTES,
+} = {}) {
   const files = [];
   const rootReal = await realpath(root);
+  let skippedOversize = 0;
 
   async function visit(directory, relativeDirectory = "") {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -126,13 +105,19 @@ export async function listFiles(root) {
       } else if (currentMetadata.isFile() && !shouldIgnoreEntry(relativePath, false)) {
         const realPath = await realpath(fullPath);
         if (!isPathInside(rootReal, realPath)) continue;
-        const metadata = await lstat(realPath);
-        if (metadata.isFile()) files.push(relativePath);
+        if (currentMetadata.size > maxFileBytes) {
+          skippedOversize += 1;
+          continue;
+        }
+        files.push(relativePath);
       }
     }
   }
 
   await visit(root);
+  Object.defineProperty(files, "skippedOversize", { value: skippedOversize });
+  if (skippedOversize > 0)
+    console.info(`Repository ingestion skipped ${skippedOversize} oversized files`);
   return files;
 }
 
@@ -211,7 +196,7 @@ async function cloneWithLimits(url, dir, {
     controller.abort();
     rejectFailure(error);
   };
-  const args = ["clone", "--depth", "100", "--single-branch", "--no-tags", "--quiet", url, dir];
+  const args = ["clone", "--depth", "1", "--single-branch", "--no-tags", "--filter=blob:none", "--quiet", url, dir];
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
   const clonePromise = Promise.resolve().then(() => runGitImpl(args, {
     env,
@@ -369,19 +354,5 @@ export function buildTree(files) {
 }
 
 export function shouldIgnoreEntry(relativePath, isDirectory = false) {
-  const parts = relativePath.split(/[\\/]/).filter(Boolean);
-  const directoryParts = isDirectory ? parts : parts.slice(0, -1);
-  if (directoryParts.some((part) => skippedDirectories.has(part.toLowerCase()))) return true;
-
-  const filename = parts.at(-1) ?? "";
-  const lowerName = filename.toLowerCase();
-  const extension = path.extname(lowerName);
-
-  return (
-    !isDirectory &&
-    (lowerName.endsWith(".lock") ||
-      lowerName.endsWith("-lock.json") ||
-      /\.(?:min|bundle|chunk)(?:\.[^.]+)?$/i.test(lowerName) ||
-      skippedExtensions.has(extension))
-  );
+  return shouldIgnore(relativePath, isDirectory);
 }

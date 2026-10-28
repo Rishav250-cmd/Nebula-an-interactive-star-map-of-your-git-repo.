@@ -28,6 +28,7 @@ import { NebulaError } from "../services/errors.js";
 import { config } from "../services/config.js";
 import { createJobLimiter } from "../services/limiter.js";
 import { elapsedMs, logTiming, startTimer, timingEnabled } from "../services/timing.js";
+import { getChurn } from "../services/churn.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
@@ -51,6 +52,7 @@ export function createAnalyzeRouter({
   parseFileImpl,
   listFilesImpl = listFiles,
   buildGraphImpl = buildGraph,
+  getChurnImpl = getChurn,
   getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
   cacheAnalysisGraphImpl = cacheAnalysisGraph,
@@ -108,7 +110,8 @@ export function createAnalyzeRouter({
       const repository = cacheProbe.repository ?? await jobLimiter.run(
         () => cloneAndBuild(url, { cacheProbe, timing }),
       );
-      storeAnalysisImpl(repository);
+      const storedRepository = storeAnalysisImpl(repository);
+      startChurnRefresh(storedRepository ?? repository);
       return response.status(200).json({ id: repository.id, status: "ready" });
     } catch (error) {
       throw pipelineError(error);
@@ -224,6 +227,7 @@ export function createAnalyzeRouter({
         progress: getAnalysisImpl(id)?.job?.progress ?? { done: 0, total: 0 },
       };
       storeAnalysisImpl({ ...repository, job: readyJob });
+      startChurnRefresh(getAnalysisImpl(id));
       update(readyJob);
     } catch (error) {
       if (reservation) jobLimiter.cancelReservation(reservation);
@@ -255,7 +259,8 @@ export function createAnalyzeRouter({
       const repository = cacheProbe.repository ?? await jobLimiter.run(
         () => cloneAndBuild(url, { cacheProbe }),
       );
-      storeAnalysisImpl(repository);
+      const storedRepository = storeAnalysisImpl(repository);
+      startChurnRefresh(storedRepository ?? repository);
       return response
         .status(200)
         .json({ ...repository.graph, id: repository.id });
@@ -605,6 +610,7 @@ export function createAnalyzeRouter({
       };
       if (onState) buildOptions.onProgress = onState;
       if (parseFileImpl) buildOptions.parseFileImpl = parseFileImpl;
+      if (buildGraphImpl === buildGraph) buildOptions.deferChurn = true;
       if (timing) {
         buildOptions.onTiming = (stage, durationMs, extra) =>
           reportTiming(timing, repository.id, stage, durationMs, extra);
@@ -615,6 +621,40 @@ export function createAnalyzeRouter({
     } catch (error) {
       throw new RepositoryPipelineError("build", error);
     }
+  }
+
+  function startChurnRefresh(repository) {
+    if (!repository?.graph || !repository.analysis || !isValidRepositoryUrl(repository.url)) return;
+    if (repository.churnRefresh) return repository.churnRefresh;
+    repository.churnRefresh = Promise.resolve()
+      .then(async () => {
+        const churnStartedAt = startTimer();
+        const churn = await getChurnImpl(repository.dir, { months: 12 });
+        reportTiming(null, repository.id, "churn", elapsedMs(churnStartedAt), { files: churn.size });
+        return churn;
+      })
+      .then(async (churn) => {
+        repository.analysis.churn = churn;
+        for (const node of repository.graph.nodes) node.churn = churn.get(node.id) ?? 0;
+        repository.hasHistory = churn.size > 0;
+        repository.graph.meta.churnAvailable = repository.hasHistory;
+        if (repository.sha) {
+          const cacheWriteStartedAt = startTimer();
+          await Promise.resolve()
+            .then(() => saveAnalysisCacheImpl({
+              repo: repository.url,
+              sha: repository.sha,
+              graph: repository.graph,
+              analysis: repository.analysis,
+            }))
+            .catch(() => {});
+          reportTiming(null, repository.id, "cache write", elapsedMs(cacheWriteStartedAt));
+        }
+      })
+      .catch((error) => {
+        console.warn("Repository churn refresh failed:", error?.message ?? String(error));
+      });
+    return repository.churnRefresh;
   }
 
   async function ensureGraphAnalysis(analysis) {

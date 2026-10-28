@@ -9,14 +9,27 @@ export async function getChurn(dir, { months = 12 } = {}) {
       baseDir: dir,
       timeout: { block: GIT_TIMEOUT_MS },
     });
+    const sinceDate = new Date();
+    sinceDate.setMonth(sinceDate.getMonth() - months);
+    const since = sinceDate.toISOString().slice(0, 10);
     const shallow = (await git.raw(["rev-parse", "--is-shallow-repository"]))
       .trim()
       .toLowerCase();
-    if (shallow === "true") return new Map();
+    if (shallow === "true") {
+      const remote = await git.raw(["remote", "get-url", "origin"]).catch(() => "");
+      if (!remote.trim()) return new Map();
+      await git.raw([
+        "fetch",
+        "--quiet",
+        `--shallow-since=${since}`,
+        "--filter=blob:none",
+        "origin",
+      ]);
+    }
 
     const output = await git.raw([
       "log",
-      `--since=${months}.months`,
+      `--since=${since}`,
       "--name-only",
       "--pretty=format:",
     ]);

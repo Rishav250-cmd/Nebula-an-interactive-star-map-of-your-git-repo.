@@ -19,6 +19,7 @@ export const config = Object.freeze({
   MAX_CODE_FILES: numberFromEnv("MAX_CODE_FILES", 2000),
   PARSE_BATCH_SIZE: numberFromEnv("PARSE_BATCH_SIZE", 50),
   MAX_FILE_BYTES: numberFromEnv("MAX_FILE_BYTES", 1048576),
+  MAX_ANALYSIS_FILE_BYTES: numberFromEnv("MAX_ANALYSIS_FILE_KB", 300) * 1024,
   MAX_SOURCE_MB: numberFromEnv("MAX_SOURCE_MB", 40),
   MAX_UPLOAD_MB: numberFromEnv("MAX_UPLOAD_MB", 50),
   MAX_ARCHIVE_ENTRIES: numberFromEnv("MAX_ARCHIVE_ENTRIES", 20000),
