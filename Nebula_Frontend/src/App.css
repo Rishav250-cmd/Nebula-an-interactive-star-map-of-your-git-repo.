@@ -940,6 +940,7 @@
 
 .graph-canvas {
   position: relative;
+  container-type: inline-size;
   display: grid;
   min-width: 0;
   min-height: 0;
@@ -1849,4 +1850,79 @@
   color: var(--text-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+@container (min-width: 621px) {
+  .graph-canvas--interactive > .graph-view-switch {
+    left: 25%;
+    transform: translateX(-50%);
+  }
+
+  .graph-canvas--interactive .edge-toggle-toolbar {
+    top: 9px;
+    right: auto;
+    left: 75%;
+    transform: translateX(-50%);
+    margin-inline: 0;
+  }
+}
+
+@container (max-width: 620px) {
+  .graph-canvas--interactive .graph-view-switch {
+    left: 8px;
+    right: 8px;
+    width: max-content;
+    max-width: calc(100% - 16px);
+    transform: none;
+  }
+
+  .graph-canvas--interactive .edge-toggle-toolbar {
+    top: 52px;
+    right: 8px;
+    left: 8px;
+    width: max-content;
+    max-width: calc(100% - 16px);
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-inline: auto;
+  }
+
+  .graph-canvas--interactive > .file-graph-stage,
+  .graph-canvas--interactive > .function-graph-canvas {
+    top: 100px;
+  }
+
+  .graph-canvas--interactive .large-repo-banner {
+    top: 104px;
+  }
+}
+
+@container (max-width: 460px) {
+  .graph-canvas--interactive .graph-view-switch {
+    left: 4px;
+    right: 4px;
+    max-width: calc(100% - 8px);
+    padding: 2px;
+  }
+
+  .graph-canvas--interactive .graph-view-switch__button {
+    padding: 7px 6px;
+    font-size: 9px;
+  }
+
+  .graph-canvas--interactive .edge-toggle-toolbar {
+    top: 48px;
+    right: 4px;
+    left: 4px;
+    max-width: calc(100% - 8px);
+  }
+
+  .graph-canvas--interactive .edge-toggle-toolbar button.folder-group-toggle {
+    margin-left: 0;
+  }
+
+  .graph-canvas--interactive > .file-graph-stage,
+  .graph-canvas--interactive > .function-graph-canvas {
+    top: 112px;
+  }
 }
