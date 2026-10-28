@@ -39,6 +39,56 @@ Graph nodes include file complexity, function counts, and cycle flags. The
 `cycles` array lists circular import components; `inCycle` is set on their
 nodes and internal edges.
 
+Graph nodes also include `blastRadius`, the number of files that depend on the
+node within four importer levels.
+
+### Async analysis and progress
+
+Blocking analysis remains the default. Add `"async": true` to receive a `202`
+response immediately, then poll the job status or follow its Server-Sent Events
+stream:
+
+```sh
+API=http://localhost:5001
+ANALYSIS_ID=$(curl -fsS "$API/api/analyze" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://github.com/expressjs/express","async":true}' | jq -r '.id')
+curl -fsS "$API/api/analyze/$ANALYSIS_ID/status"
+curl -N "$API/api/progress/$ANALYSIS_ID"
+```
+
+The job reports `cloning`, `listing`, `parsing`, `graph`, `ready`, or `error`.
+Parsing states include `{ "done": number, "total": number }`. SSE sends the
+current state and subsequent changes, then closes when analysis finishes. Jobs
+time out after three minutes.
+
+### Blast radius and onboarding
+
+`GET /api/blast` reports the files affected by a change, by importer depth, plus
+the percentage of analyzed files. Depth defaults to 4 and accepts values from 1
+to 6:
+
+```sh
+API=http://localhost:5001
+curl -fsS --get "$API/api/blast" \
+  --data-urlencode "id=$ANALYSIS_ID" \
+  --data-urlencode 'path=lib/response.js' \
+  --data-urlencode 'depth=4'
+```
+
+`GET /api/onboarding/:id` returns a suggested entry file, an ordered reading
+path, safe starter files, and GitHub issues matched to files:
+
+```sh
+API=http://localhost:5001
+curl -fsS "$API/api/onboarding/$ANALYSIS_ID"
+```
+
+Issue fetching works for GitHub repositories; ZIP uploads return
+`issuesStatus: "none"`. Other issue statuses are `ok`, `rate_limited`,
+`not_found`, and `unavailable`. Issue difficulty is `easy`, `medium`, `hard`,
+or `unknown`.
+
 ### Function-level endpoints
 
 `GET /api/callgraph` returns resolved function calls for a code file. Depth 1
@@ -76,6 +126,15 @@ curl -fsS --get "$API/api/search" \
 GitHub analyses are cached on disk by repository and commit SHA. A repeat
 analysis of the same commit reuses the cached graph and function analysis.
 ZIP uploads are analyzed on request and are not cached.
+
+### Optional GitHub token
+
+Nebula fetches public good-first-issue suggestions from GitHub. An optional
+fine-grained personal access token with no extra permissions is enough for
+public repositories and raises the API rate limit. Locally, copy
+`Nebula_backend/.env.example` to `Nebula_backend/.env` and set `GITHUB_TOKEN`
+there. On Render, add `GITHUB_TOKEN` under the service's Environment Variables.
+Keep the token private and never commit `.env`.
 
 ### Upload a ZIP archive
 
