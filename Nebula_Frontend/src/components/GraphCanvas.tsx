@@ -114,6 +114,8 @@ export function GraphCanvas() {
   const toggleEdges = useGraphStore((state) => state.toggleEdges);
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const focusRequest = useGraphStore((state) => state.focusRequest);
+  const qaFilePaths = useGraphStore((state) => state.qaFilePaths);
+  const qaFocusRequest = useGraphStore((state) => state.qaFocusRequest);
   const focusLine = useGraphStore((state) => state.focusLine);
   const clearFocus = useGraphStore((state) => state.clearFocus);
   const focusNode = useGraphStore((state) => state.focusNode);
@@ -193,7 +195,9 @@ export function GraphCanvas() {
     () => new Set(selectedCycleIndex === null ? [] : graph?.cycles[selectedCycleIndex] ?? []),
     [graph, selectedCycleIndex],
   );
-  const hasActiveFocus = graphSelectedId !== null || selectedCycleIndex !== null;
+  const qaMatchedNodeIds = useMemo(() => new Set(qaFilePaths), [qaFilePaths]);
+  const hasQAFocus = qaMatchedNodeIds.size > 0;
+  const hasActiveFocus = graphSelectedId !== null || selectedCycleIndex !== null || hasQAFocus;
   const cycleEdgeCount = useMemo(
     () => graphData.links.reduce((count, link) => count + Number(link.inCycle === true), 0),
     [graphData],
@@ -238,12 +242,16 @@ export function GraphCanvas() {
         && selectedCycleNodeIds.has(targetId);
     }
     const { sourceId, targetId } = resolveEndpoints(link);
+    if (hasQAFocus) {
+      return (sourceId !== null && qaMatchedNodeIds.has(sourceId))
+        || (targetId !== null && qaMatchedNodeIds.has(targetId));
+    }
     const sourceDistance = sourceId ? blastDistanceById.get(sourceId) : undefined;
     const targetDistance = targetId ? blastDistanceById.get(targetId) : undefined;
     return edgeDirection(link, graphSelectedId) !== 'unrelated'
       || (sourceDistance !== undefined && targetDistance !== undefined
         && Math.abs(sourceDistance - targetDistance) === 1);
-  }, [blastDistanceById, graphSelectedId, selectedCycleIndex, selectedCycleNodeIds]);
+  }, [blastDistanceById, graphSelectedId, hasQAFocus, qaMatchedNodeIds, selectedCycleIndex, selectedCycleNodeIds]);
 
   useEffect(() => {
     if (!selectedId && selectedCycleIndex === null) return;
@@ -395,6 +403,42 @@ export function GraphCanvas() {
     return () => cancelAnimationFrame(frameId);
   }, [graph, graphData.nodes.length, selectedCycleIndex]);
 
+  useEffect(() => {
+    if (qaFocusRequest === 0 || !hasQAFocus || graphData.nodes.length === 0) return;
+    const startedAt = performance.now();
+    let previousPositions: number[] | null = null;
+    let stableFrames = 0;
+    let frameId = 0;
+    const fitQAMatchesWhenStable = () => {
+      const nodes = graphData.nodes.filter((node) => qaMatchedNodeIds.has(node.id));
+      const positions = nodes.flatMap((node) => (
+        typeof node.x === 'number' && Number.isFinite(node.x)
+        && typeof node.y === 'number' && Number.isFinite(node.y)
+          ? [node.x, node.y]
+          : []
+      ));
+      const elapsed = performance.now() - startedAt;
+      if (nodes.length === qaMatchedNodeIds.size && positions.length === nodes.length * 2) {
+        if (previousPositions && positions.every((position, index) => (
+          Math.abs(position - previousPositions![index]) < 0.15
+        ))) stableFrames += 1;
+        else stableFrames = 0;
+        previousPositions = positions;
+        if ((stableFrames >= 4 && elapsed >= 250) || elapsed >= 3_500) {
+          graphRef.current?.zoomToFit(
+            650,
+            90,
+            (node) => node.id !== undefined && qaMatchedNodeIds.has(String(node.id)),
+          );
+          return;
+        }
+      }
+      if (elapsed < 4_000) frameId = requestAnimationFrame(fitQAMatchesWhenStable);
+    };
+    frameId = requestAnimationFrame(fitQAMatchesWhenStable);
+    return () => cancelAnimationFrame(frameId);
+  }, [graphData.nodes, hasQAFocus, qaFocusRequest, qaMatchedNodeIds]);
+
   const drawNode = useCallback((
     node: NodeObject<GraphNode>,
     context: CanvasRenderingContext2D,
@@ -415,6 +459,7 @@ export function GraphCanvas() {
     const isSymbolPulse = symbolPulse?.id === id;
     const isRelated = relatedNodeIds.has(id);
     const isInSelectedCycle = selectedCycleNodeIds.has(id);
+    const isQAMatched = qaMatchedNodeIds.has(id);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
     const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
     const isDirectlyConnected = isImport || isImporter;
@@ -422,6 +467,8 @@ export function GraphCanvas() {
     context.save();
     const isHighlighted = selectedCycleIndex !== null
       ? isInSelectedCycle
+      : hasQAFocus
+        ? isQAMatched
       : graphSelectedId !== null
         ? isGraphSelected || isDirectlyConnected
         : isRelated;
@@ -471,6 +518,17 @@ export function GraphCanvas() {
     context.fill();
     context.shadowBlur = 0;
 
+    if (isQAMatched) {
+      context.beginPath();
+      context.arc(node.x, node.y, radius + 5 / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = '#c4b5fd';
+      context.lineWidth = 2.2 / zoomScale;
+      context.shadowColor = '#a78bfa';
+      context.shadowBlur = 10 / zoomScale;
+      context.stroke();
+      context.shadowBlur = 0;
+    }
+
     if (node.inCycle && cyclesVisible && (!hasActiveFocus || isHighlighted)) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
@@ -515,6 +573,7 @@ export function GraphCanvas() {
     const visibleLabelCount = Math.ceil(graphData.nodes.length * visibleFraction);
     const isImportantAtCurrentZoom = (labelPriority.get(id) ?? Number.MAX_SAFE_INTEGER) < visibleLabelCount;
     const shouldDrawLabel = isGraphSelected
+      || isQAMatched
       || isImport
       || isImporter
       || isHovered
@@ -545,6 +604,8 @@ export function GraphCanvas() {
         labelBounds.current.push(bounds);
         context.fillStyle = isGraphSelected
           ? '#f8fafc'
+          : isQAMatched
+            ? '#ddd6fe'
           : isImport
             ? '#5eead4'
             : isImporter
@@ -557,7 +618,7 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, blastCounts, blastDistanceById, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, healthById, healthScoreById, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse, viewMode]);
+  }, [adjacency, blastCounts, blastDistanceById, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, hasQAFocus, healthById, healthScoreById, hoveredId, labelPriority, qaMatchedNodeIds, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse, viewMode]);
 
   const resetLabelBounds = useCallback(() => {
     labelBounds.current = [];
@@ -570,13 +631,14 @@ export function GraphCanvas() {
     if (link.inCycle === true && cyclesVisible) {
       return withAlpha(CYCLE_COLOR, hasActiveFocus && !isHighlightedLink(link) ? 0.12 : 0.82);
     }
+    if (hasQAFocus && isHighlightedLink(link)) return 'rgba(196, 181, 253, 0.92)';
     const direction = edgeDirection(link, graphSelectedId);
     if (direction === 'outgoing') return OUTGOING_COLOR;
     if (direction === 'incoming') return INCOMING_COLOR;
     const { sourceId } = resolveEndpoints(link);
     const sourceColor = colorById.get(sourceId ?? '') ?? '#94a3b8';
     return withAlpha(sourceColor, hasActiveFocus ? 0.12 : 0.28);
-  }, [colorById, cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
+  }, [colorById, cyclesVisible, graphSelectedId, hasActiveFocus, hasQAFocus, isHighlightedLink]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => {
     if (hasActiveFocus && !isHighlightedLink(link)) return 0.35;

@@ -70,6 +70,72 @@ export function createExploreRouter({
     }
   });
 
+  router.post("/qa", async (request, response) => {
+    const { id, question } = request.body ?? {};
+    if (typeof id !== "string" || id === "") {
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' value is required" });
+    }
+    if (typeof question !== "string" || question.trim().length < 3 || question.length > 300) {
+      throw new NebulaError("INVALID_QUERY", { message: "Ask a question between 3 and 300 characters long." });
+    }
+
+    const analysis = getAnalysisImpl(id);
+    if (!analysis) throw unknownIdError(id);
+
+    const terms = questionTerms(question);
+    const files = (await getFileList(analysis)).filter((filePath) => (
+      CODE_EXTENSIONS.has(pathModule.extname(filePath).toLowerCase())
+    ));
+    const ranked = [];
+
+    for (const filePath of files) {
+      try {
+        const source = (await readRepoFile(analysis.dir, filePath)).content;
+        const lowerSource = source.toLowerCase();
+        const matchedTerms = terms.filter(({ expression }) => expression.test(lowerSource));
+        if (matchedTerms.length === 0) continue;
+
+        const lines = source.split(/\r?\n/);
+        let bestLine = null;
+        let bestLineScore = 0;
+        for (let index = 0; index < lines.length; index += 1) {
+          const line = lines[index].trim();
+          if (!line) continue;
+          const matchedOnLine = terms.filter(({ expression }) => expression.test(line.toLowerCase()));
+          const lineScore = matchedOnLine.reduce((score, term) => score + term.weight, 0);
+          if (lineScore > bestLineScore) {
+            bestLineScore = lineScore;
+            bestLine = { line: index + 1, snippet: line.slice(0, 280), matchedTerms: matchedOnLine.map(({ label }) => label) };
+          }
+        }
+
+        const pathMatches = matchedTerms.reduce((score, term) => (
+          score + (term.expression.test(filePath.toLowerCase()) ? term.weight * 2 : 0)
+        ), 0);
+        const score = matchedTerms.reduce((total, term) => {
+          const occurrences = lowerSource.match(new RegExp(term.source, "g"))?.length ?? 0;
+          return total + term.weight * Math.min(occurrences, 5);
+        }, pathMatches);
+        if (score > 0 && bestLine) ranked.push({ path: filePath, ...bestLine, score });
+      } catch {
+        // Skip files that disappear or cannot be read during retrieval.
+      }
+    }
+
+    ranked.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+    const matches = ranked.slice(0, 6).map(({ path, line, snippet, matchedTerms: matched }) => ({
+      path,
+      line,
+      snippet,
+      matchedTerms: matched,
+    }));
+    const answer = matches.length
+      ? `The strongest code evidence for “${question.trim()}” is in ${matches[0].path}:${matches[0].line}. The other supporting files below contain related references.`
+      : `I couldn't find a clear match for “${question.trim()}” in the indexed JavaScript or TypeScript files. Try a narrower term, such as a function name, route, token, or service.`;
+
+    return response.status(200).json({ answer, matches });
+  });
+
   router.get("/search", async (request, response) => {
     const { id, q } = request.query;
     if (typeof id !== "string" || id === "") {
@@ -99,4 +165,40 @@ export function createExploreRouter({
   });
 
   return router;
+}
+
+const QUESTION_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "at", "be", "by", "do", "does", "for", "from",
+  "handled", "how", "in", "is", "it", "of", "on", "or", "the", "this", "to", "what", "where", "which", "who", "with",
+]);
+const QUESTION_SYNONYMS = [
+  { pattern: /\b(auth|authentication|authorization|authorize|authorized|login|log\s*in|sign\s*in|signin|session|token|jwt|passport|credential)\b/i, terms: ["auth", "authentication", "authorization", "authorize", "login", "signin", "session", "token", "jwt", "passport", "credential", "middleware"] },
+  { pattern: /\b(api|route|endpoint|request|controller)\b/i, terms: ["api", "route", "router", "endpoint", "controller", "express"] },
+  { pattern: /\b(database|db|storage|persist|query)\b/i, terms: ["database", "db", "storage", "persist", "query", "model", "repository"] },
+  { pattern: /\b(error|exception|failure|fail)\b/i, terms: ["error", "exception", "failure", "catch", "throw"] },
+  { pattern: /\b(test|testing|spec)\b/i, terms: ["test", "spec", "describe", "assert", "expect"] },
+];
+
+function questionTerms(question) {
+  const rawTerms = question.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [];
+  const terms = new Map();
+  for (const term of rawTerms) {
+    if (!QUESTION_STOP_WORDS.has(term)) terms.set(term, 2);
+  }
+  for (const group of QUESTION_SYNONYMS) {
+    if (!group.pattern.test(question)) continue;
+    for (const term of group.terms) {
+      if (!terms.has(term)) terms.set(term, 1);
+    }
+  }
+  return [...terms].map(([label, weight]) => ({
+    label,
+    weight,
+    source: `(?<![a-z0-9_])${escapeRegex(label)}(?![a-z0-9_])`,
+    expression: new RegExp(`(?<![a-z0-9_])${escapeRegex(label).replace(/ /g, "\\s+")}(?![a-z0-9_])`, "i"),
+  }));
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

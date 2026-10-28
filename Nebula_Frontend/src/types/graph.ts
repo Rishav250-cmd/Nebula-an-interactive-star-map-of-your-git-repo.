@@ -49,6 +49,18 @@ export type SearchResult =
   | { type: 'file'; name: string; path: string; line?: number; kind?: never }
   | { type: 'symbol'; name: string; path: string; line: number; kind: string };
 
+export type RepositoryQAMatch = {
+  path: string;
+  line: number;
+  snippet: string;
+  matchedTerms: string[];
+};
+
+export type RepositoryQAResponse = {
+  answer: string;
+  matches: RepositoryQAMatch[];
+};
+
 export type GraphWarning = {
   file: string;
   message: string;

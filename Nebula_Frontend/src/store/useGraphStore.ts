@@ -27,6 +27,8 @@ type GraphStore = {
   selectedId: string | null;
   hoveredId: string | null;
   focusRequest: number;
+  qaFilePaths: string[];
+  qaFocusRequest: number;
   viewMode: ViewMode;
   callGraph: CallGraph | null;
   callGraphStatus: CallGraphStatus;
@@ -46,6 +48,8 @@ type GraphStore = {
   selectNode: (id: string | null) => void;
   hoverNode: (id: string | null) => void;
   focusNode: (id: string) => void;
+  setQAFilePaths: (paths: string[]) => void;
+  clearQAHighlights: () => void;
   setViewMode: (mode: ViewMode) => void;
   loadCallGraph: () => Promise<void>;
   setCallGraphDepth: (depth: 1 | 2) => void;
@@ -88,6 +92,8 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
       callGraphStatus: 'idle',
       callGraphError: null,
       selectedCycleIndex: null,
+      qaFilePaths: [],
+      qaFocusRequest: get().qaFocusRequest + 1,
       selectedFunctionId: null,
       focusLine: null,
       filters: EMPTY_FILTERS,
@@ -110,6 +116,8 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     selectedId: null,
     hoveredId: null,
     focusRequest: 0,
+    qaFilePaths: [],
+    qaFocusRequest: 0,
     viewMode: 'file',
     callGraph: null,
     callGraphStatus: 'idle',
@@ -169,6 +177,14 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
         else clearCallGraphState();
       }
     },
+    setQAFilePaths: (qaFilePaths) => set((state) => ({
+      qaFilePaths,
+      qaFocusRequest: state.qaFocusRequest + 1,
+    })),
+    clearQAHighlights: () => set((state) => ({
+      qaFilePaths: [],
+      qaFocusRequest: state.qaFocusRequest + 1,
+    })),
     setViewMode: (viewMode) => {
       const previousMode = get().viewMode;
       if (previousMode === viewMode) return;
