@@ -10,6 +10,14 @@ function numberFromEnv(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+let cpuCount = 2;
+try {
+  cpuCount = os.availableParallelism?.() ?? os.cpus().length;
+} catch {
+  // Keep parsing concurrency small on hosts that cannot report CPUs.
+}
+const defaultParserWorkers = Math.max(1, Math.min(cpuCount, 2));
+
 export const config = Object.freeze({
   PORT: numberFromEnv("PORT", 5001),
   CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
@@ -18,6 +26,7 @@ export const config = Object.freeze({
   CACHE_DIR: path.resolve(process.env.CACHE_DIR || path.join(backendDirectory, ".cache")),
   MAX_CODE_FILES: numberFromEnv("MAX_CODE_FILES", 2000),
   PARSE_BATCH_SIZE: numberFromEnv("PARSE_BATCH_SIZE", 50),
+  PARSER_WORKERS: numberFromEnv("PARSER_WORKERS", defaultParserWorkers),
   MAX_FILE_BYTES: numberFromEnv("MAX_FILE_BYTES", 1048576),
   MAX_ANALYSIS_FILE_BYTES: numberFromEnv("MAX_ANALYSIS_FILE_KB", 300) * 1024,
   MAX_SOURCE_MB: numberFromEnv("MAX_SOURCE_MB", 40),

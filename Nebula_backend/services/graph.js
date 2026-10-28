@@ -9,6 +9,7 @@ import { loadAliases, resolveImport } from "./resolver.js";
 import { config } from "./config.js";
 import { NebulaError } from "./errors.js";
 import { elapsedMs, logTiming, startTimer } from "./timing.js";
+import { createParserPool } from "./parserPool.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
 const TIER_TWO_NAMES = new Set([
@@ -97,50 +98,80 @@ export async function buildGraph({
   const analysis = { files: {}, aliases, churn: churnMap };
   let processedCount = 0;
   let memoryLimited = false;
+  const parserPool = createParserPool({
+    workerCount: parseFileImpl === parseFile
+      ? Math.min(config.PARSER_WORKERS, selectedFiles.length)
+      : 0,
+    parseImpl: parseFileImpl,
+  });
+  const parseRssLimitBytes = config.MAX_RSS_MB * 1024 * 1024;
 
   const parseStartedAt = startTimer();
-  for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
-    const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map((file) => readAndParseFile(dir, file, parseFileImpl)),
-    );
+  try {
+    for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
+      const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map((file) => readAndParseFile(dir, file, parserPool)),
+      );
 
-    for (const result of results) {
-      processedCount += 1;
-      if (result.skip === "large") {
-        skipped.large += 1;
-        warnings.push({ file: result.path, message: "Skipped file larger than 1 MB." });
-        continue;
+      for (const result of results) {
+        processedCount += 1;
+        if (result.skip === "large") {
+          skipped.large += 1;
+          warnings.push({ file: result.path, message: "Skipped file larger than 1 MB." });
+          continue;
+        }
+        if (result.skip === "generated") {
+          skipped.generated += 1;
+          continue;
+        }
+        if (result.skip === "binary") {
+          skipped.binary += 1;
+          continue;
+        }
+        if (result.error) {
+          warnings.push({ file: result.path, message: result.error });
+          console.warn(`Skipping file that failed to parse: ${result.path}`);
+          const skippedParse = {
+            ...result,
+            imports: [],
+            bindings: new Map(),
+            functions: [],
+            calls: [],
+            complexity: 0,
+          };
+          analysis.files[result.path] = {
+            functions: [],
+            calls: [],
+            bindings: skippedParse.bindings,
+            complexity: 0,
+          };
+          parsedFiles.push(skippedParse);
+          continue;
+        }
+        analysis.files[result.path] = {
+          functions: result.functions,
+          calls: result.calls,
+          bindings: result.bindings,
+          complexity: result.complexity,
+        };
+        parsedFiles.push(result);
       }
-      if (result.skip === "generated") {
-        skipped.generated += 1;
-        continue;
-      }
-      if (result.skip === "binary") {
-        skipped.binary += 1;
-        continue;
-      }
-      if (result.error) warnings.push({ file: result.path, message: result.error });
-      analysis.files[result.path] = {
-        functions: result.functions,
-        calls: result.calls,
-        bindings: result.bindings,
-        complexity: result.complexity,
-      };
-      parsedFiles.push(result);
-    }
-    onProgress?.({
-      status: "parsing",
-      progress: { done: processedCount, total: selectedFiles.length },
-    });
+      onProgress?.({
+        status: "parsing",
+        progress: { done: processedCount, total: selectedFiles.length },
+      });
 
-    if (
-      processedCount < selectedFiles.length
-      && process.memoryUsage().rss > config.MAX_RSS_MB * 1024 * 1024
-    ) {
-      memoryLimited = true;
-      break;
+      if (
+        processedCount < selectedFiles.length
+        && process.memoryUsage().rss > parseRssLimitBytes
+      ) {
+        memoryLimited = true;
+        break;
+      }
     }
+  } finally {
+    await parserPool.close();
   }
   reportTiming("parse", elapsedMs(parseStartedAt), { files: processedCount });
 
@@ -269,27 +300,31 @@ async function getHistory(dir, repoUrl, id) {
   }
 }
 
-async function readAndParseFile(dir, filePath, parseFileImpl) {
-  const diskPath = path.join(dir, ...filePath.split("/"));
-  const metadata = await stat(diskPath);
-  if (metadata.size > config.MAX_FILE_BYTES) return { path: filePath, skip: "large" };
+async function readAndParseFile(dir, filePath, parserPool) {
+  try {
+    const diskPath = path.join(dir, ...filePath.split("/"));
+    const metadata = await stat(diskPath);
+    if (metadata.size > config.MAX_FILE_BYTES) return { path: filePath, skip: "large" };
 
-  const buffer = await readFile(diskPath);
-  if (buffer.subarray(0, 1000).includes(0)) return { path: filePath, skip: "binary" };
-  const source = buffer.toString("utf8").replace(/^\uFEFF/, "");
-  if (isGeneratedSource(source)) return { path: filePath, skip: "generated" };
+    const buffer = await readFile(diskPath);
+    if (buffer.subarray(0, 1000).includes(0)) return { path: filePath, skip: "binary" };
+    const source = buffer.toString("utf8").replace(/^\uFEFF/, "");
+    if (isGeneratedSource(source)) return { path: filePath, skip: "generated" };
 
-  const parsed = parseFileImpl(source, filePath);
-  return {
-    path: filePath,
-    source,
-    imports: parsed.imports,
-    bindings: parsed.bindings,
-    functions: parsed.functions,
-    calls: parsed.calls,
-    complexity: parsed.complexity,
-    error: parsed.error,
-  };
+    const parsed = await parserPool.parse(source, filePath);
+    return {
+      path: filePath,
+      source,
+      imports: parsed.imports,
+      bindings: parsed.bindings,
+      functions: parsed.functions,
+      calls: parsed.calls,
+      complexity: parsed.complexity,
+      error: parsed.error,
+    };
+  } catch (error) {
+    return { path: filePath, error: error?.message ?? "Could not parse file" };
+  }
 }
 
 function isGeneratedSource(source) {
