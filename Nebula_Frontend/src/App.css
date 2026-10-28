@@ -1852,7 +1852,21 @@
   font-variant-numeric: tabular-nums;
 }
 
-@container (max-width: 720px) {
+@container (min-width: 801px) {
+  .graph-canvas--interactive > .graph-view-switch {
+    left: 25%;
+    transform: translateX(-50%);
+  }
+
+  .graph-canvas--interactive .edge-toggle-toolbar {
+    right: auto;
+    left: 75%;
+    transform: translateX(-50%);
+    margin-inline: 0;
+  }
+}
+
+@container (max-width: 800px) {
   .graph-canvas--interactive .graph-view-switch {
     left: 8px;
     right: 8px;
