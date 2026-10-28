@@ -4,6 +4,7 @@ export function RepositoryHealthCard() {
   const graph = useGraphStore((state) => state.graph);
   const analysisId = useGraphStore((state) => state.analysisId);
   const healthReport = useGraphStore((state) => state.healthReport);
+  const focusNode = useGraphStore((state) => state.focusNode);
 
   if (!graph) return null;
 
@@ -32,6 +33,23 @@ export function RepositoryHealthCard() {
           {!healthReport.historyAvailable && (
             <p className="repo-health-card__note">No Git history; hotspot counts exclude churn.</p>
           )}
+          <div className="repo-health-card__hotspots">
+            <h4>Top 5 hotspots</h4>
+            {healthReport.files.some((file) => file.isHotspot) ? (
+              <ol>
+                {healthReport.files.filter((file) => file.isHotspot).slice(0, 5).map((file) => (
+                  <li key={file.id}>
+                    <button type="button" title={`Focus ${file.id}`} onClick={() => focusNode(file.id)}>
+                      <span>{file.id}</span>
+                      <small>{file.churn} × C{file.maxComplexity}</small>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p>No hotspots detected.</p>
+            )}
+          </div>
         </>
       ) : (
         <div className="repo-health-card__loading" role="status">

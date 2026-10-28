@@ -785,9 +785,8 @@ export function GraphCanvas() {
       {viewMode === 'heatmap' && phase === 'ready' && graph && (
         <aside className="health-map-legend" aria-label="Health map legend">
           <strong>File health</strong>
-          <span><i className="health-dot health-dot--good" /> Good ≥ 75</span>
-          <span><i className="health-dot health-dot--watch" /> Watch 45–74</span>
-          <span><i className="health-dot health-dot--risk" /> At risk &lt; 45</span>
+          <div className="health-map-gradient" role="img" aria-label="Green good health through yellow to red at risk" />
+          <div className="health-map-gradient-labels"><span>Healthy</span><span>At risk</span></div>
           {healthReport && !healthReport.historyAvailable && <small>Git history unavailable; churn is excluded.</small>}
           {!healthReport && analysisId && <small>Loading health metrics…</small>}
         </aside>
