@@ -1,3 +1,7 @@
+
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 const analyses = new Map();
 
 export function storeAnalysis({
@@ -31,13 +35,19 @@ export function getAnalysis(id) {
   return analyses.get(id) ?? null;
 }
 
-export function cacheAnalysisGraph(id, graph, graphAnalysis = null) {
-  const analysis = analyses.get(id);
-  if (!analysis) return null;
+export function cacheAnalysisGraph(
+  id,
+  graph,
+  graphAnalysis = null
+) {
+  const entry = analyses.get(id);
 
-  analysis.graph = graph;
-  analysis.analysis = graphAnalysis;
-  return analysis;
+  if (!entry) return null;
+
+  entry.graph = graph;
+  entry.analysis = graphAnalysis;
+
+  return entry;
 }
 
 export function updateAnalysisJob(id, job) {

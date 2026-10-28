@@ -9,6 +9,7 @@ import { SplashScreen } from './components/SplashScreen';
 import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
 
+
 export default function App() {
   const [showSplash, setShowSplash] = useState(shouldShowSplash);
   const analyze = useGraphStore((state) => state.analyze);

@@ -16,11 +16,17 @@ function displayValue(value: number | undefined): string {
 export function NodeTooltip({ containerRef }: NodeTooltipProps) {
   const hoveredId = useGraphStore((state) => state.hoveredId);
   const graph = useGraphStore((state) => state.graph);
+  const healthReport = useGraphStore((state) => state.healthReport);
   const nodesById = useMemo(
     () => new Map(graph?.nodes.map((candidate) => [candidate.id, candidate] as const) ?? []),
     [graph],
   );
+  const healthById = useMemo(
+    () => new Map(healthReport?.files.map((file) => [file.id, file] as const) ?? []),
+    [healthReport],
+  );
   const node = hoveredId ? nodesById.get(hoveredId) ?? null : null;
+  const health = hoveredId ? healthById.get(hoveredId) ?? null : null;
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const latestPointer = useRef<Point | null>(null);
   const frameRef = useRef<number | null>(null);
@@ -96,10 +102,15 @@ export function NodeTooltip({ containerRef }: NodeTooltipProps) {
       <strong className="node-tooltip__path" title={node.id}>{node.id}</strong>
       <dl className="node-tooltip__metrics">
         <div><dt>LOC</dt><dd>{displayValue(node.loc)}</dd></div>
-        <div><dt>Complexity</dt><dd>{displayValue(node.complexity)}</dd></div>
-        <div><dt>Churn</dt><dd>{displayValue(node.churn)}</dd></div>
+        <div><dt>Complexity</dt><dd>{displayValue(health?.maxComplexity ?? node.complexity)}</dd></div>
+        <div><dt>Churn</dt><dd>{health?.churn == null ? (healthReport && !healthReport.historyAvailable ? 'No Git history' : displayValue(node.churn)) : displayValue(health.churn)}</dd></div>
+        {health && <div><dt>Health</dt><dd>{health.healthScore}/100</dd></div>}
       </dl>
-      {node.inCycle && <span className="node-tooltip__badge">In a circular import</span>}
+      <div className="node-tooltip__badges">
+        {(health?.isGodFile ?? node.isGodFile) && <span className="node-tooltip__badge node-tooltip__badge--god">God file</span>}
+        {health?.isHotspot && <span className="node-tooltip__badge">Hotspot</span>}
+        {(health?.inCycle ?? node.inCycle) && <span className="node-tooltip__badge node-tooltip__badge--cycle">In a circular import</span>}
+      </div>
     </div>
   );
 }

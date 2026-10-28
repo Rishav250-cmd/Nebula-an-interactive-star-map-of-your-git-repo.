@@ -16,6 +16,7 @@ import { applyFilters } from '../lib/applyFilters';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 import { buildAdjacency } from '../lib/graphHighlight';
+import { fetchHealth } from '../api/client';
 import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
 type GraphInstance = ForceGraphMethods<
   NodeObject<GraphNode>,
@@ -87,8 +88,18 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
+function healthColor(score: number | null): string {
+  if (score === null) return '#94a3b8';
+  if (score >= 75) return '#34d399';
+  if (score >= 45) return '#fbbf24';
+  return '#fb7185';
+}
+
 export function GraphCanvas() {
   const graph = useGraphStore((state) => state.graph);
+  const analysisId = useGraphStore((state) => state.analysisId);
+  const healthReport = useGraphStore((state) => state.healthReport);
+  const setHealthReport = useGraphStore((state) => state.setHealthReport);
   const phase = useGraphStore((state) => state.phase);
   const phaseStartedAt = useGraphStore((state) => state.phaseStartedAt);
   const error = useGraphStore((state) => state.error);
@@ -119,6 +130,21 @@ export function GraphCanvas() {
   const handledSymbolFocusRequest = useRef(focusRequest);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
+
+  useEffect(() => {
+    if (!analysisId) {
+      setHealthReport(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    fetchHealth(analysisId, controller.signal)
+      .then((report) => setHealthReport(report))
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setHealthReport(null);
+      });
+    return () => controller.abort();
+  }, [analysisId, setHealthReport]);
 
   // The graph without the files hidden in the filter panel (same object when no filter is active).
   const visibleGraph = useMemo(() => applyFilters(graph, filters), [graph, filters]);
@@ -151,6 +177,15 @@ export function GraphCanvas() {
   const colorById = useMemo(() => new Map(
     graph?.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const) ?? [],
   ), [colorByFolder, graph]);
+  const healthById = useMemo(() => new Map(
+    healthReport?.files.map((file) => [file.id, file] as const) ?? [],
+  ), [healthReport]);
+  const healthScoreById = useMemo(() => new Map(
+    graph?.nodes.map((node) => [
+      node.id,
+      healthById.get(node.id)?.healthScore ?? node.healthScore ?? null,
+    ] as const) ?? [],
+  ), [graph, healthById]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
@@ -166,6 +201,33 @@ export function GraphCanvas() {
   const hasCycleEdges = cycleEdgeCount > 0;
   const animateCyclePulse = cycleEdgeCount <= 300;
 
+  const blastDistanceById = useMemo(() => {
+    const distances = new Map<string, number>();
+    if (!graphSelectedId) return distances;
+    distances.set(graphSelectedId, 0);
+    const queue = [graphSelectedId];
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      const distance = distances.get(current) ?? 0;
+      if (distance >= 4) continue;
+      const neighbors = new Set([
+        ...(adjacency.imports.get(current) ?? []),
+        ...(adjacency.importers.get(current) ?? []),
+      ]);
+      for (const neighbor of neighbors) {
+        if (distances.has(neighbor)) continue;
+        distances.set(neighbor, distance + 1);
+        queue.push(neighbor);
+      }
+    }
+    return distances;
+  }, [adjacency, graphSelectedId]);
+  const blastCounts = useMemo(() => {
+    const counts = [0, 0, 0, 0, 0];
+    for (const distance of blastDistanceById.values()) counts[distance] += 1;
+    return counts;
+  }, [blastDistanceById]);
+  const relatedNodeIds = blastDistanceById;
   const isHighlightedLink = useCallback((link: LinkEndpoints) => {
     if (selectedCycleIndex !== null) {
       const { sourceId, targetId } = resolveEndpoints(link);
@@ -175,18 +237,13 @@ export function GraphCanvas() {
         && selectedCycleNodeIds.has(sourceId)
         && selectedCycleNodeIds.has(targetId);
     }
-    return edgeDirection(link, graphSelectedId) !== 'unrelated';
-  }, [graphSelectedId, selectedCycleIndex, selectedCycleNodeIds]);
-
-  const relatedNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (!graphSelectedId) return ids;
-    ids.add(graphSelectedId);
-    adjacency.imports.get(graphSelectedId)?.forEach((id) => ids.add(id));
-    adjacency.importers.get(graphSelectedId)?.forEach((id) => ids.add(id));
-
-    return ids;
-  }, [adjacency, graphSelectedId]);
+    const { sourceId, targetId } = resolveEndpoints(link);
+    const sourceDistance = sourceId ? blastDistanceById.get(sourceId) : undefined;
+    const targetDistance = targetId ? blastDistanceById.get(targetId) : undefined;
+    return edgeDirection(link, graphSelectedId) !== 'unrelated'
+      || (sourceDistance !== undefined && targetDistance !== undefined
+        && Math.abs(sourceDistance - targetDistance) === 1);
+  }, [blastDistanceById, graphSelectedId, selectedCycleIndex, selectedCycleNodeIds]);
 
   useEffect(() => {
     if (!selectedId && selectedCycleIndex === null) return;
@@ -346,7 +403,10 @@ export function GraphCanvas() {
     if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
 
     const id = String(node.id ?? '');
-    const color = colorById.get(id) ?? '#a0aec0';
+    const nodeHealth = healthById.get(id);
+    const color = viewMode === 'heatmap'
+      ? healthColor(healthScoreById.get(id) ?? null)
+      : colorById.get(id) ?? '#a0aec0';
     const zoomScale = Math.max(globalScale, 0.01);
     const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
     const radius = nodeRadius(loc);
@@ -354,6 +414,7 @@ export function GraphCanvas() {
     const isHovered = id === hoveredId;
     const isSymbolPulse = symbolPulse?.id === id;
     const isRelated = relatedNodeIds.has(id);
+    const blastDistance = blastDistanceById.get(id);
     const isInSelectedCycle = selectedCycleNodeIds.has(id);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
     const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
@@ -369,6 +430,39 @@ export function GraphCanvas() {
     context.beginPath();
     context.arc(node.x, node.y, radius * 1.62, 0, Math.PI * 2);
     context.fill();
+
+    if (graphSelectedId === id && blastDistanceById.size > 1) {
+      for (let distance = 1; distance <= 4; distance += 1) {
+        if (blastCounts[distance] === 0) continue;
+        const ringRadius = radius + (distance * 27) / zoomScale;
+        context.beginPath();
+        context.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
+        context.strokeStyle = withAlpha(distance === 1 ? '#5eead4' : distance === 2 ? '#fbbf24' : '#fb7185', 0.42);
+        context.lineWidth = 1 / zoomScale;
+        context.setLineDash([4 / zoomScale, 4 / zoomScale]);
+        context.stroke();
+        context.setLineDash([]);
+        context.font = `${8 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
+        context.textAlign = 'left';
+        context.textBaseline = 'middle';
+        context.fillStyle = 'rgba(226, 232, 240, 0.78)';
+        context.fillText(`${distance} hop · ${blastCounts[distance]}`, node.x + ringRadius, node.y);
+      }
+      const progress = ((performance.now() % 1700) / 1700);
+      const rippleRadius = radius + (progress * 78) / zoomScale;
+      context.beginPath();
+      context.arc(node.x, node.y, rippleRadius, 0, Math.PI * 2);
+      context.strokeStyle = withAlpha('#c4b5fd', 0.52 * (1 - progress));
+      context.lineWidth = 2 / zoomScale;
+      context.stroke();
+    } else if (blastDistance !== undefined && blastDistance > 0) {
+      const blastColor = blastDistance === 1 ? '#5eead4' : blastDistance === 2 ? '#fbbf24' : '#fb7185';
+      context.beginPath();
+      context.arc(node.x, node.y, radius + (2.5 + blastDistance) / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = withAlpha(blastColor, 0.9);
+      context.lineWidth = 1.5 / zoomScale;
+      context.stroke();
+    }
 
     context.beginPath();
     context.arc(node.x, node.y, radius, 0, Math.PI * 2);
@@ -407,6 +501,14 @@ export function GraphCanvas() {
       context.arc(node.x, node.y, radius + (isGraphSelected ? 5 : 4) / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = isGraphSelected ? '#c4b5fd' : '#5eead4';
       context.lineWidth = 1.4 / zoomScale;
+      context.stroke();
+    }
+
+    if (nodeHealth?.isGodFile && isHovered) {
+      context.beginPath();
+      context.arc(node.x, node.y, radius + 7 / zoomScale, 0, Math.PI * 2);
+      context.strokeStyle = '#c4b5fd';
+      context.lineWidth = 2 / zoomScale;
       context.stroke();
     }
 
@@ -475,7 +577,7 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse]);
+  }, [adjacency, blastCounts, blastDistanceById, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, healthById, healthScoreById, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse, viewMode]);
 
   const resetLabelBounds = useCallback(() => {
     labelBounds.current = [];
@@ -582,14 +684,22 @@ export function GraphCanvas() {
         >
           Function graph
         </button>
+        <button
+          type="button"
+          className={viewMode === 'heatmap' ? 'graph-view-switch__button is-active' : 'graph-view-switch__button'}
+          aria-pressed={viewMode === 'heatmap'}
+          onClick={() => setViewMode('heatmap')}
+        >
+          Health map
+        </button>
       </div>
       {phase === 'ready' && graph && (
       <div className="edge-toggle-toolbar" role="group" aria-label="Edge visibility">
         <button
           type="button"
           aria-pressed={importsVisible}
-          disabled={viewMode !== 'file'}
-          title={viewMode === 'file' ? 'Toggle import edges' : 'Imports applies to the file graph.'}
+          disabled={viewMode === 'function'}
+          title={viewMode !== 'function' ? 'Toggle import edges' : 'Imports applies to the file graph.'}
           onClick={() => toggleEdges('imports')}
         >
           Imports
@@ -606,8 +716,8 @@ export function GraphCanvas() {
         <button
           type="button"
           aria-pressed={cyclesVisible}
-          disabled={viewMode !== 'file'}
-          title={viewMode === 'file' ? 'Toggle circular import edges' : 'Cycles applies to the file graph.'}
+          disabled={viewMode === 'function'}
+          title={viewMode !== 'function' ? 'Toggle circular import edges' : 'Cycles applies to the file graph.'}
           onClick={() => toggleEdges('cycles')}
         >
           Cycles
@@ -630,7 +740,7 @@ export function GraphCanvas() {
       {viewMode === 'function' && phase === 'ready' && graph && (
         <FunctionGraphCanvas />
       )}
-      {viewMode === 'file' && phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
+      {viewMode !== 'function' && phase === 'ready' && canvasSize.width > 0 && canvasSize.height > 0 && graph && (
         <div className="file-graph-stage">
         <ForceGraph2D<GraphNode, GraphEdge>
           ref={graphRef}
@@ -644,7 +754,9 @@ export function GraphCanvas() {
           linkCanvasObject={drawCycleLink}
           linkVisibility={isLinkVisible}
           autoPauseRedraw={(
-            (hasCycleEdges && cyclesVisible && animateCyclePulse) || symbolPulse !== null
+            (hasCycleEdges && cyclesVisible && animateCyclePulse)
+            || symbolPulse !== null
+            || graphSelectedId !== null
           ) ? false : undefined}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
@@ -670,7 +782,17 @@ export function GraphCanvas() {
         </div>
       )}
       {viewMode === 'file' && phase === 'ready' && graph && <GraphLegend legend={legend} />}
-      {viewMode === 'file' && <NodeTooltip containerRef={containerRef} />}
+      {viewMode === 'heatmap' && phase === 'ready' && graph && (
+        <aside className="health-map-legend" aria-label="Health map legend">
+          <strong>File health</strong>
+          <span><i className="health-dot health-dot--good" /> Good ≥ 75</span>
+          <span><i className="health-dot health-dot--watch" /> Watch 45–74</span>
+          <span><i className="health-dot health-dot--risk" /> At risk &lt; 45</span>
+          {healthReport && !healthReport.historyAvailable && <small>Git history unavailable; churn is excluded.</small>}
+          {!healthReport && analysisId && <small>Loading health metrics…</small>}
+        </aside>
+      )}
+      {viewMode !== 'function' && <NodeTooltip containerRef={containerRef} />}
     </main>
   );
 }

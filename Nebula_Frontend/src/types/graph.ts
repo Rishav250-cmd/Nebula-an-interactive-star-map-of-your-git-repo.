@@ -67,3 +67,24 @@ export type GraphData = {
   cycles: string[][];
   warnings: GraphWarning[];
 };
+
+export type HealthFile = {
+  id: string;
+  loc: number;
+  churn: number | null;
+  maxComplexity: number;
+  hotspotScore: number | null;
+  healthScore: number;
+  isHotspot: boolean;
+  isGodFile: boolean;
+  inCycle: boolean;
+};
+
+export type HealthReport = {
+  grade: 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'F' | null;
+  score: number;
+  lowConfidence: boolean;
+  historyAvailable: boolean;
+  summary: { files: number; cycleFiles: number; godFiles: number; hotspotFiles: number };
+  files: HealthFile[];
+};
