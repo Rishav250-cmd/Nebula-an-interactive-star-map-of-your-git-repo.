@@ -1,4 +1,5 @@
 import { simpleGit } from "simple-git";
+import { countChurn } from "../utils/churn.js";
 
 const GIT_TIMEOUT_MS = 30_000;
 
@@ -21,27 +22,7 @@ export async function getChurn(dir, { months = 12 } = {}) {
     ]);
     if (!output.trim()) return new Map();
 
-    const churn = new Map();
-    let commitPaths = new Set();
-
-    function countCommitPaths() {
-      for (const filePath of commitPaths) {
-        churn.set(filePath, (churn.get(filePath) ?? 0) + 1);
-      }
-      commitPaths = new Set();
-    }
-
-    for (const line of output.split(/\r?\n/)) {
-      const filePath = line.replace(/\r$/, "");
-      if (!filePath.trim()) {
-        countCommitPaths();
-      } else {
-        commitPaths.add(filePath);
-      }
-    }
-    countCommitPaths();
-
-    return churn;
+    return countChurn(output);
   } catch {
     return new Map();
   }

@@ -944,7 +944,7 @@
   bottom: 12px;
   left: 12px;
   display: grid;
-  gap: 5px;
+  gap: 6px;
   padding: 9px 11px;
   border: 1px solid rgb(148 163 184 / 15%);
   border-radius: 9px;
@@ -954,12 +954,31 @@
   pointer-events: none;
 }
 .health-map-legend strong { color: #e2e8f0; font-size: 10px; }
-.health-map-legend span { display: flex; align-items: center; gap: 6px; }
 .health-map-legend small { max-width: 200px; color: #fcd34d; }
-.health-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
-.health-dot--good { color: #34d399; background: #34d399; }
-.health-dot--watch { color: #fbbf24; background: #fbbf24; }
-.health-dot--risk { color: #fb7185; background: #fb7185; }
+.health-map-gradient { width: 180px; max-width: 100%; height: 8px; border-radius: 99px; background: linear-gradient(90deg, #34d399 0%, #a3e635 35%, #fbbf24 62%, #fb7185 100%); box-shadow: 0 0 10px rgb(251 191 36 / 12%); }
+.health-map-gradient-labels { display: flex; width: 180px; max-width: 100%; justify-content: space-between; color: #aebbd0; font-size: 8px; }
+
+.repo-health-card__hotspots { padding-top: 7px; border-top: 1px solid rgb(148 163 184 / 13%); }
+.repo-health-card__hotspots h4 { margin: 0 0 5px; color: #aebbd0; font-size: 9px; font-weight: 700; }
+.repo-health-card__hotspots ol { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.repo-health-card__hotspots li button { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; border: 0; color: #c4b5fd; background: transparent; text-align: left; cursor: pointer; }
+.repo-health-card__hotspots li button:hover span { color: #fff; text-decoration: underline; }
+.repo-health-card__hotspots li span { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.repo-health-card__hotspots li small { flex: 0 0 auto; color: #94a3b8; font-size: 8px; font-variant-numeric: tabular-nums; }
+.repo-health-card__hotspots > p { margin: 0; color: #94a3b8; font-size: 9px; }
+
+.pathfinder-panel { display: grid; gap: 8px; margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--panel-border); }
+.pathfinder-panel__header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pathfinder-panel__header h3 { margin: 0; color: #cbd5e1; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.pathfinder-panel__header > span { color: #718096; font-size: 9px; }
+.pathfinder-panel ol { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; counter-reset: path-step; }
+.pathfinder-panel li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 8px; border: 1px solid rgb(148 163 184 / 12%); border-radius: 8px; background: rgb(255 255 255 / 2%); counter-increment: path-step; }
+.pathfinder-panel__step { min-width: 0; }
+.pathfinder-panel__path { display: block; overflow: hidden; color: #e2e8f0; font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.pathfinder-panel__step p { margin: 3px 0 0; color: #94a3b8; font-size: 8px; line-height: 1.4; }
+.pathfinder-panel li > button { padding: 5px 7px; border: 1px solid rgb(167 139 250 / 28%); border-radius: 6px; color: #ddd6fe; background: rgb(124 58 237 / 11%); font-size: 8px; font-weight: 700; cursor: pointer; }
+.pathfinder-panel li > button:hover { border-color: #a78bfa; background: rgb(124 58 237 / 24%); }
+.pathfinder-panel__empty { margin: 0; color: #94a3b8; font-size: 9px; line-height: 1.5; }
 
 
 .graph-canvas--interactive > .graph-view-switch {
