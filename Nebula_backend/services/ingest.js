@@ -13,10 +13,15 @@ const PREFLIGHT_TIMEOUT_MS = 5 * 1000;
 const skippedDirectories = new Set([
   "node_modules",
   ".git",
+  "vendor",
+  "third_party",
   "dist",
   "build",
+  "out",
+  "target",
   ".next",
   "coverage",
+  "bower_components",
 ]);
 const skippedExtensions = new Set([
   ".png",
@@ -366,7 +371,7 @@ export function buildTree(files) {
 export function shouldIgnoreEntry(relativePath, isDirectory = false) {
   const parts = relativePath.split(/[\\/]/).filter(Boolean);
   const directoryParts = isDirectory ? parts : parts.slice(0, -1);
-  if (directoryParts.some((part) => skippedDirectories.has(part))) return true;
+  if (directoryParts.some((part) => skippedDirectories.has(part.toLowerCase()))) return true;
 
   const filename = parts.at(-1) ?? "";
   const lowerName = filename.toLowerCase();
@@ -376,7 +381,7 @@ export function shouldIgnoreEntry(relativePath, isDirectory = false) {
     !isDirectory &&
     (lowerName.endsWith(".lock") ||
       lowerName.endsWith("-lock.json") ||
-      lowerName.endsWith(".min.js") ||
+      /\.(?:min|bundle|chunk)(?:\.[^.]+)?$/i.test(lowerName) ||
       skippedExtensions.has(extension))
   );
 }

@@ -11,7 +11,7 @@ import {
 import path from "node:path";
 import { config } from "./config.js";
 
-export const ANALYSIS_VERSION = 4;
+export const ANALYSIS_VERSION = 5;
 export const MAX_CACHE_BYTES = config.MAX_CACHE_MB * 1024 * 1024;
 export const MAX_CACHE_FILES = config.MAX_CACHE_FILES;
 

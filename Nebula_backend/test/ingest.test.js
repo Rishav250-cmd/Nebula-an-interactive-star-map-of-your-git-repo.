@@ -44,6 +44,8 @@ test("listFiles returns relative POSIX paths and skips generated and binary file
     await mkdir(path.join(root, "src"), { recursive: true });
     await mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
     await mkdir(path.join(root, "dist"), { recursive: true });
+    await mkdir(path.join(root, "vendor"), { recursive: true });
+    await mkdir(path.join(root, "third_party"), { recursive: true });
     await writeFile(path.join(root, "src", "index.js"), "export {};");
     await writeFile(path.join(root, "src", "bundle.min.js"), "minified");
     await writeFile(path.join(root, "package-lock.json"), "{}");
@@ -51,6 +53,10 @@ test("listFiles returns relative POSIX paths and skips generated and binary file
     await writeFile(path.join(root, "logo.svg"), "<svg />");
     await writeFile(path.join(root, "node_modules", "pkg", "index.js"), "ignored");
     await writeFile(path.join(root, "dist", "app.js"), "ignored");
+    await writeFile(path.join(root, "vendor", "vendored.js"), "ignored");
+    await writeFile(path.join(root, "third_party", "external.js"), "ignored");
+    await writeFile(path.join(root, "src", "app.bundle.js"), "ignored");
+    await writeFile(path.join(root, "src", "app.chunk.js"), "ignored");
     outside = await mkdtemp(path.join(os.tmpdir(), "nebula-ingest-outside-"));
     await writeFile(path.join(outside, "secret.js"), "outside");
     await symlink(outside, path.join(root, "outside-link"));
