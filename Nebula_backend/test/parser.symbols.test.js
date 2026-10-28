@@ -112,6 +112,33 @@ test("collects functions in JSX and TSX source files", () => {
   assert.equal(tsx.functions[0].exported, true);
 });
 
+test("infers names for property-assigned functions and callback functions", () => {
+  const source = [
+    "res.links = function(links) {};",
+    "res.get = () => {};",
+    "const formatters = { text: function() {}, html: () => {} };",
+    "res.format({ json: function() {} });",
+    "done = done || function(err, value) {};",
+    "items.map(function(item) { return item; });",
+  ].join("\n");
+  const result = parseFile(source, "src/response.js");
+
+  assert.equal(result.error, null);
+  assert.deepEqual(
+    result.functions.map(({ name }) => name),
+    [
+      "links",
+      "get",
+      "formatters.text",
+      "formatters.html",
+      "json",
+      "done",
+      "map callback",
+    ],
+  );
+  assert.ok(result.functions.every(({ name }) => !name.includes("anonymous")));
+});
+
 test("extracts import and require bindings", () => {
   const source = [
     'import fallback, { original as renamed, named } from "./module.js";',

@@ -159,18 +159,72 @@ export function parseFile(source, filePath) {
       return isInsideExport(path);
     };
 
-    const assignedName = (path) => {
-      const parent = path.parentPath;
-      if (parent?.isVariableDeclarator() && parent.node.init === path.node) {
-        return identifierName(parent.node.id);
+    const assignmentValuePath = (path) => {
+      let valuePath = path;
+      while (
+        valuePath.parentPath?.isLogicalExpression() &&
+        valuePath.parentPath.node.right === valuePath.node
+      ) {
+        valuePath = valuePath.parentPath;
       }
-      if (parent?.isAssignmentExpression() && parent.node.right === path.node) {
-        const exported = commonJsExport(path);
-        if (exported) return exported.name;
-        if (parent.node.left.type === "Identifier")
-          return parent.node.left.name;
+      return valuePath;
+    };
+
+    const assignmentTargetName = (node) => {
+      if (node?.type === "Identifier") return node.name;
+      if (node?.type === "MemberExpression") {
+        return node.computed
+          ? identifierName(node.property)
+          : methodKeyName(node.property);
       }
       return null;
+    };
+
+    const objectPropertyName = (path) => {
+      const propertyPath = path.parentPath;
+      if (
+        !propertyPath?.isObjectProperty() ||
+        propertyPath.node.value !== path.node
+      ) {
+        return null;
+      }
+      const propertyName = methodKeyName(propertyPath.node.key);
+      if (!propertyName) return null;
+      const objectName = objectLiteralOwner(propertyPath);
+      return objectName ? `${objectName}.${propertyName}` : propertyName;
+    };
+
+    const callbackName = (path) => {
+      const parent = path.parentPath;
+      if (!parent?.isCallExpression()) return null;
+      const callee = parent.node.callee;
+      const calleeName =
+        callee.type === "MemberExpression"
+          ? callee.computed
+            ? identifierName(callee.property)
+            : methodKeyName(callee.property)
+          : identifierName(callee);
+      return calleeName ? `${calleeName} callback` : "callback";
+    };
+
+    const assignedName = (path) => {
+      const valuePath = assignmentValuePath(path);
+      const parent = valuePath.parentPath;
+      if (
+        parent?.isVariableDeclarator() &&
+        parent.node.init === valuePath.node
+      ) {
+        return identifierName(parent.node.id);
+      }
+      if (
+        parent?.isAssignmentExpression() &&
+        parent.node.right === valuePath.node
+      ) {
+        const exported = commonJsExport(path);
+        if (exported) return exported.name;
+        return assignmentTargetName(parent.node.left);
+      }
+      return objectPropertyName(path) ?? callbackName(path);
     };
 
     const exportMetadata = (path, kind) => {
@@ -226,7 +280,8 @@ export function parseFile(source, filePath) {
             variableName ??
             (defaultExport ? "default" : null) ??
             commonJs?.name ??
-            "<anonymous>");
+            callbackName(path) ??
+            `callback at line ${node.loc?.start.line ?? 1}`);
       return addFunction(path, {
         name: inferredName,
         kind: "function",
