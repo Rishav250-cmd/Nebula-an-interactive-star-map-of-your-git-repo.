@@ -690,7 +690,7 @@ export function createAnalyzeRouter({
   }
 
   function startChurnRefresh(repository) {
-    if (!repository?.graph || !repository.analysis || !isValidRepositoryUrl(repository.url)) return;
+    if (!repository?.graph || !repository.analysis || !parseGitHubRepo(repository.url)) return;
     if (repository.churnRefresh) return repository.churnRefresh;
     repository.churnRefresh = Promise.resolve()
       .then(async () => {
