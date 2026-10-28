@@ -119,7 +119,10 @@ test("POST /api/analyze rejects invalid GitHub URLs", async () => {
     });
 
     assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, "Invalid GitHub URL");
+    assert.deepEqual((await response.json()).error, {
+      code: "INVALID_URL",
+      message: "Invalid GitHub URL",
+    });
   });
 });
 
@@ -139,7 +142,10 @@ test("POST /api/analyze returns an error when cloning fails", async () => {
     });
 
     assert.equal(response.status, 502);
-    assert.equal((await response.json()).error, "Could not clone repo (private or not found?)");
+    assert.deepEqual((await response.json()).error, {
+      code: "CLONE_FAILED",
+      message: "Could not clone repo (private or not found?)",
+    });
   });
 });
 
@@ -150,7 +156,10 @@ test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => 
     const response = await fetch(`${baseUrl}/api/graph/missing-analysis`);
 
     assert.equal(response.status, 404);
-    assert.equal((await response.json()).error, "Unknown repository id");
+    assert.deepEqual((await response.json()).error, {
+      code: "UNKNOWN_ID",
+      message: "Unknown repository id",
+    });
   });
 });
 
@@ -384,7 +393,7 @@ test("POST /api/upload rejects a ZIP-slip entry", async () => {
   await withServer(app, async (baseUrl) => {
     const response = await uploadZip(baseUrl, "unsafe.zip", zip.toBuffer());
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /escapes its target folder/);
+    assert.match((await response.json()).error.message, /escapes its target folder/);
   });
 });
 
@@ -397,7 +406,7 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
       body: new FormData(),
     });
     assert.equal(missing.status, 400);
-    assert.match((await missing.json()).error, /ZIP file is required/);
+    assert.match((await missing.json()).error.message, /ZIP file is required/);
 
     const nonZip = await uploadZip(
       baseUrl,
@@ -405,7 +414,7 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
       Buffer.from("not a zip"),
     );
     assert.equal(nonZip.status, 400);
-    assert.equal((await nonZip.json()).error, "Only .zip files are accepted.");
+    assert.equal((await nonZip.json()).error.message, "Only .zip files are accepted.");
   });
 });
 

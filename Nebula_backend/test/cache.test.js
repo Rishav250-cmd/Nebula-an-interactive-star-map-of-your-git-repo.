@@ -124,6 +124,7 @@ test("analysis cache ignores corrupted files and version mismatches", async () =
 
 test("remote failure serves stale cache only when its clone folder exists", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "nebula-stale-clone-"));
+  await mkdir(dir, { recursive: true });
   const graph = { repo: REPO_URL, sha: SHA_ONE, nodes: [], edges: [], cycles: [], warnings: [], meta: { stale: false } };
   const analysis = { files: {} };
   const app = createApp({
@@ -156,7 +157,11 @@ test("remote failure serves stale cache only when its clone folder exists", asyn
         body: JSON.stringify({ url: REPO_URL }),
       });
       assert.equal(response.status, 502);
-      assert.equal((await response.json()).code, "CLONE_FAILED");
+      const payload = await response.json();
+      assert.deepEqual(Object.keys(payload), ["error"]);
+      assert.deepEqual(Object.keys(payload.error), ["code", "message"]);
+      assert.equal(payload.error.code, "CLONE_FAILED");
+      assert.equal(typeof payload.error.message, "string");
     });
   } finally {
     await rm(dir, { recursive: true, force: true });

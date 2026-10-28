@@ -69,7 +69,10 @@ test("GET /api/onboarding returns 404 for an unknown repository", async () => {
   await withServer(createApp(), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/onboarding/unknown`);
     assert.equal(response.status, 404);
-    assert.equal((await response.json()).error, "Unknown repository id");
+    assert.deepEqual((await response.json()).error, {
+      code: "UNKNOWN_ID",
+      message: "Unknown repository id",
+    });
   });
 });
 

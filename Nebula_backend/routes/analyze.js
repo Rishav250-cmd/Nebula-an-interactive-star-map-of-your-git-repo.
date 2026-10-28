@@ -1,5 +1,6 @@
 import express from "express";
 import multer from "multer";
+import path from "node:path";
 import { rm } from "node:fs/promises";
 import { stat } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
@@ -61,9 +62,11 @@ export function createAnalyzeRouter({
   fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
   buildOnboardingImpl = buildOnboarding,
   updateAnalysisJobImpl = updateAnalysisJob,
+  cleanupTemporaryClones,
   jobLimiter = createJobLimiter(),
 } = {}) {
   const router = express.Router();
+  const shouldCleanTemporaryClones = cleanupTemporaryClones ?? !config.REPO_DIR_EXPLICIT;
   const runningJobs = new Map();
   const blockingJobs = new Map();
   const perFileResultCache = new WeakMap();
@@ -236,6 +239,7 @@ export function createAnalyzeRouter({
       if (reservation) jobLimiter.cancelReservation(reservation);
       if (active) {
         active = false;
+        await cleanupTemporaryClone(id, getAnalysisImpl(id)?.dir);
         updateAnalysisJobImpl(id, {
           status: "error",
           error: getJobErrorMessage(error),
@@ -297,6 +301,7 @@ export function createAnalyzeRouter({
         startChurnRefresh(ready ?? repository);
         return repository;
       } catch (error) {
+        await cleanupTemporaryClone(id, getAnalysisImpl(id)?.dir);
         update({
           status: "error",
           error: getJobErrorMessage(error),
@@ -718,8 +723,24 @@ export function createAnalyzeRouter({
       })
       .catch((error) => {
         console.warn("Repository churn refresh failed:", error?.message ?? String(error));
-      });
+      })
+      .finally(() => cleanupTemporaryClone(repository.id, repository.dir));
     return repository.churnRefresh;
+  }
+
+  async function cleanupTemporaryClone(id, directory) {
+    if (!shouldCleanTemporaryClones || typeof directory !== "string") return;
+    const resolvedDirectory = path.resolve(directory);
+    const explicitlyAllowedExternalDirectory = cleanupTemporaryClones === true;
+    if (!explicitlyAllowedExternalDirectory) {
+      const relativeToRepoRoot = path.relative(config.REPO_DIR, resolvedDirectory);
+      if (relativeToRepoRoot.startsWith("..") || path.isAbsolute(relativeToRepoRoot)) return;
+    }
+    const expectedDirectory = cloneLocationForUrlImpl(
+      getAnalysisImpl(id)?.url ?? "",
+    ).dir;
+    if (resolvedDirectory !== path.resolve(expectedDirectory)) return;
+    await rm(resolvedDirectory, { recursive: true, force: true }).catch(() => {});
   }
 
   async function ensureGraphAnalysis(analysis) {

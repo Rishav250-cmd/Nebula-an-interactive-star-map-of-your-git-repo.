@@ -50,11 +50,14 @@ test("GET /api/blast reports unknown ids and missing or unknown paths", async ()
   await withServer(async (baseUrl) => {
     const unknownId = await fetch(`${baseUrl}/api/blast?id=missing&path=a.js`);
     assert.equal(unknownId.status, 404);
-    assert.equal((await unknownId.json()).error, "Unknown repository id");
+    assert.deepEqual((await unknownId.json()).error, {
+      code: "UNKNOWN_ID",
+      message: "Unknown repository id",
+    });
 
     const missingPath = await fetch(`${baseUrl}/api/blast?id=missing`);
     assert.equal(missingPath.status, 400);
-    assert.equal((await missingPath.json()).error, "The 'path' query parameter is required");
+    assert.equal((await missingPath.json()).error.message, "The 'path' query parameter is required");
 
     const id = `blast-api-path-${Date.now()}`;
     storeAnalysis({
@@ -68,7 +71,7 @@ test("GET /api/blast reports unknown ids and missing or unknown paths", async ()
       `${baseUrl}/api/blast?id=${id}&path=unknown.js`,
     );
     assert.equal(unknownPath.status, 404);
-    assert.equal((await unknownPath.json()).error, "Path is not a graph node");
+    assert.equal((await unknownPath.json()).error.message, "Path is not a graph node");
   });
 });
 
