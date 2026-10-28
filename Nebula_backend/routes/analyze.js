@@ -8,14 +8,19 @@ import {
   cloneLocationForUrl,
   cloneRepo,
   listFiles,
+  repoIdFor,
 } from "../services/ingest.js";
 import { buildCallGraph } from "../services/callgraph.js";
+import { computeBlast } from "../services/blast.js";
+import { fetchGoodFirstIssues, parseGitHubRepo } from "../services/github.js";
+import { buildOnboarding } from "../services/onboarding.js";
 import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
 import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
 import {
   cacheAnalysisGraph,
   getAnalysis,
   storeAnalysis,
+  updateAnalysisJob,
 } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
 
@@ -25,6 +30,10 @@ const uploadZip = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 0 },
 });
+const JOB_TIMEOUT_MS = 3 * 60 * 1000;
+const PROGRESS_POLL_MS = 300;
+const PROGRESS_HEARTBEAT_MS = 15 * 1000;
+const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
 
 export function createAnalyzeRouter({
   cloneRepoImpl = cloneRepo,
@@ -39,13 +48,40 @@ export function createAnalyzeRouter({
   getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
   cacheAnalysisGraphImpl = cacheAnalysisGraph,
+  fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
+  buildOnboardingImpl = buildOnboarding,
+  updateAnalysisJobImpl = updateAnalysisJob,
 } = {}) {
   const router = express.Router();
+  const runningJobs = new Map();
 
   router.post("/analyze", async (request, response) => {
-    const { url } = request.body ?? {};
+    const { url, async: asyncMode } = request.body ?? {};
     if (!isValidRepositoryUrl(url))
       return response.status(400).json({ error: "Invalid GitHub URL" });
+
+    if (asyncMode === true) {
+      const id = repoIdFor(url);
+      if (runningJobs.has(id))
+        return response.status(202).json({ id, status: "cloning" });
+
+      const { dir } = cloneLocationForUrlImpl(url);
+      storeAnalysisImpl({
+        id,
+        dir,
+        url,
+        graph: null,
+        analysis: null,
+        job: {
+          status: "cloning",
+          error: null,
+          progress: { done: 0, total: 0 },
+        },
+      });
+      const job = runAsyncJob(id, url);
+      runningJobs.set(id, job);
+      return response.status(202).json({ id, status: "cloning" });
+    }
 
     try {
       const repository = await cloneAndBuild(url);
@@ -55,6 +91,126 @@ export function createAnalyzeRouter({
       return sendPipelineError(response, error);
     }
   });
+
+  router.get("/analyze/:id/status", (request, response) => {
+    const repository = getAnalysisImpl(request.params.id);
+    if (!repository)
+      return response.status(404).json({ error: "Unknown repository id" });
+    const job = repository.job ?? {
+      status: repository.graph ? "ready" : "cloning",
+      error: null,
+      progress: { done: 0, total: 0 },
+    };
+    return response.status(200).json({
+      id: request.params.id,
+      status: job.status,
+      error: job.error ?? null,
+      progress: job.progress ?? { done: 0, total: 0 },
+    });
+  });
+
+  router.get("/progress/:id", (request, response) => {
+    const repository = getAnalysisImpl(request.params.id);
+    if (!repository)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    response.status(200);
+    response.set({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    response.flushHeaders();
+
+    let closed = false;
+    let lastState = "";
+    const clearTimers = () => {
+      clearInterval(pollTimer);
+      clearInterval(heartbeatTimer);
+    };
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      clearTimers();
+      if (!response.writableEnded) response.end();
+    };
+    const sendState = () => {
+      if (closed) return;
+      const current = getAnalysisImpl(request.params.id);
+      if (!current) return closeStream();
+      const job = current.job ?? {
+        status: current.graph ? "ready" : "cloning",
+        error: null,
+        progress: { done: 0, total: 0 },
+      };
+      const payload = {
+        id: request.params.id,
+        status: job.status,
+        error: job.error ?? null,
+        progress: job.progress ?? { done: 0, total: 0 },
+      };
+      const serialized = JSON.stringify(payload);
+      if (serialized !== lastState) {
+        response.write(`data: ${serialized}\n\n`);
+        lastState = serialized;
+      }
+      if (payload.status === "ready" || payload.status === "error")
+        closeStream();
+    };
+    const pollTimer = setInterval(sendState, PROGRESS_POLL_MS);
+    const heartbeatTimer = setInterval(() => {
+      if (!closed) response.write(": heartbeat\n\n");
+    }, PROGRESS_HEARTBEAT_MS);
+    response.on("close", () => {
+      closed = true;
+      clearTimers();
+    });
+    sendState();
+  });
+
+  async function runAsyncJob(id, url) {
+    let active = true;
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new JobTimeoutError()),
+        JOB_TIMEOUT_MS,
+      );
+    });
+    const update = (state) => {
+      if (!active) return;
+      updateAnalysisJobImpl(id, { ...state, error: state.error ?? null });
+    };
+
+    try {
+      const repository = await Promise.race([
+        cloneAndBuild(url, { onState: update }),
+        timeout,
+      ]);
+      if (!active) return;
+      const readyJob = {
+        status: "ready",
+        error: null,
+        progress: getAnalysisImpl(id)?.job?.progress ?? { done: 0, total: 0 },
+      };
+      storeAnalysisImpl({ ...repository, job: readyJob });
+      update(readyJob);
+    } catch (error) {
+      if (active) {
+        active = false;
+        updateAnalysisJobImpl(id, {
+          status: "error",
+          error: getJobErrorMessage(error),
+          progress: getAnalysisImpl(id)?.job?.progress ?? { done: 0, total: 0 },
+        });
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      active = false;
+      runningJobs.delete(id);
+    }
+  }
 
   router.post("/graph", async (request, response) => {
     const { url } = request.body ?? {};
@@ -172,7 +328,99 @@ export function createAnalyzeRouter({
     }
   });
 
-  async function cloneAndBuild(url) {
+  router.get("/blast", async (request, response) => {
+    const { id, path: filePath, depth: rawDepth } = request.query;
+    if (typeof filePath !== "string" || filePath === "")
+      return response
+        .status(400)
+        .json({ error: "The 'path' query parameter is required" });
+    if (typeof id !== "string" || id === "")
+      return response
+        .status(400)
+        .json({ error: "The 'id' query parameter is required" });
+    if (
+      rawDepth !== undefined &&
+      (typeof rawDepth !== "string" || !/^[1-6]$/.test(rawDepth))
+    ) {
+      return response
+        .status(400)
+        .json({ error: "Depth must be an integer from 1 to 6" });
+    }
+
+    const analysis = getAnalysisImpl(id);
+    if (!analysis)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    try {
+      await ensureGraphAnalysis(analysis);
+      const nodes = analysis.graph?.nodes ?? [];
+      if (!nodes.some((node) => node.id === filePath))
+        return response.status(404).json({ error: "Path is not a graph node" });
+
+      const blast = computeBlast(analysis.analysis?.reverseIndex, filePath, {
+        maxDepth: rawDepth === undefined ? 4 : Number(rawDepth),
+      });
+      const totalFiles = nodes.length;
+      return response.status(200).json({
+        ...blast,
+        totalFiles,
+        percentOfRepo:
+          totalFiles === 0
+            ? 0
+            : Math.round((blast.count / totalFiles) * 1000) / 10,
+      });
+    } catch (error) {
+      return sendPipelineError(response, error);
+    }
+  });
+
+  router.get("/onboarding/:id", async (request, response) => {
+    const repository = getAnalysisImpl(request.params.id);
+    if (!repository)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    if (
+      repository.onboardingCache &&
+      repository.onboardingCache.expiresAt > Date.now()
+    ) {
+      return response.status(200).json(repository.onboardingCache.response);
+    }
+
+    try {
+      await ensureGraphAnalysis(repository);
+      let issueResult = { status: "none", issues: [], resetAt: null };
+      const parsedRepo = parseGitHubRepo(repository.url);
+      if (parsedRepo) {
+        try {
+          issueResult = await fetchGoodFirstIssuesImpl(
+            parsedRepo.owner,
+            parsedRepo.repo,
+          );
+        } catch {
+          issueResult = { status: "unavailable", issues: [], resetAt: null };
+        }
+      }
+      const onboarding = buildOnboardingImpl({
+        graph: repository.graph,
+        analysis: repository.analysis,
+        issues: Array.isArray(issueResult?.issues) ? issueResult.issues : [],
+      });
+      const result = {
+        ...onboarding,
+        issuesStatus: issueResult?.status ?? "unavailable",
+        issuesResetAt: issueResult?.resetAt ?? null,
+      };
+      repository.onboardingCache = {
+        response: result,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      };
+      return response.status(200).json(result);
+    } catch (error) {
+      return sendPipelineError(response, error);
+    }
+  });
+
+  async function cloneAndBuild(url, { onState } = {}) {
     let remoteSha = null;
     try {
       remoteSha = await getRemoteShaImpl(url);
@@ -189,6 +437,7 @@ export function createAnalyzeRouter({
       try {
         const previousSha = await getHeadShaImpl(previousClone.dir);
         if (previousSha === remoteSha) {
+          onState?.({ status: "ready", progress: { done: 0, total: 0 } });
           return {
             id: previousClone.id,
             dir: previousClone.dir,
@@ -235,10 +484,11 @@ export function createAnalyzeRouter({
     if (cloneCache) {
       repository.graph = cloneCache.graph;
       repository.analysis = cloneCache.analysis;
+      onState?.({ status: "ready", progress: { done: 0, total: 0 } });
       return repository;
     }
 
-    const built = await buildGraphForRepository(repository);
+    const built = await buildGraphForRepository(repository, onState);
     repository.graph = built.graph;
     repository.analysis = built.analysis;
     const builtSha = clonedSha ?? built.graph?.sha;
@@ -272,17 +522,27 @@ export function createAnalyzeRouter({
     }
   }
 
-  async function buildGraphForRepository(repository) {
+  async function buildGraphForRepository(repository, onState) {
     try {
+      onState?.({ status: "listing", progress: { done: 0, total: 0 } });
       const files = await listFilesImpl(repository.dir);
+      const total = Math.min(
+        files.filter((file) => /\.(?:js|jsx|ts|tsx|mjs|cjs)$/i.test(file))
+          .length,
+        2000,
+      );
+      onState?.({ status: "parsing", progress: { done: 0, total } });
       const buildOptions = {
         id: repository.id,
         dir: repository.dir,
         files,
         repoUrl: repository.url,
       };
+      if (onState) buildOptions.onProgress = onState;
       if (parseFileImpl) buildOptions.parseFileImpl = parseFileImpl;
-      return await buildGraphImpl(buildOptions);
+      const built = await buildGraphImpl(buildOptions);
+      onState?.({ status: "graph", progress: { done: total, total } });
+      return built;
     } catch (error) {
       throw new RepositoryPipelineError("build", error);
     }
@@ -340,6 +600,23 @@ function sendPipelineError(response, error) {
   return response
     .status(500)
     .json({ error: "Could not build repository graph." });
+}
+
+function getJobErrorMessage(error) {
+  if (error instanceof JobTimeoutError)
+    return "Analysis job exceeded the 3 minute timeout.";
+  if (error instanceof RepositoryPipelineError && error.stage === "clone")
+    return "Could not clone repository.";
+  if (error instanceof RepositoryPipelineError && error.stage === "build")
+    return "Could not build repository graph.";
+  return error?.message || "Analysis job failed.";
+}
+
+class JobTimeoutError extends Error {
+  constructor() {
+    super("Analysis job exceeded the 3 minute timeout.");
+    this.name = "JobTimeoutError";
+  }
 }
 
 class RepositoryPipelineError extends Error {

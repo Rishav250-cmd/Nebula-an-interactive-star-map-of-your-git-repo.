@@ -10,22 +10,23 @@ export function storeAnalysis({
   url,
   graph = null,
   analysis: graphAnalysis = null,
-  hasHistory,
+  job = null,
 }) {
-  const entry = {
+  const entry = analyses.get(id) ?? {};
+  Object.assign(entry, {
     id,
     dir,
     url,
     graph: graph ?? null,
     analysis: graphAnalysis ?? null,
-
-    // Git clones have a .git entry; ZIP uploads usually do not.
-    hasHistory:
-      typeof hasHistory === "boolean"
-        ? hasHistory
-        : existsSync(path.join(dir, ".git")),
-  };
-
+    onboardingCache: null,
+    job: job ??
+      entry.job ?? {
+        status: "ready",
+        error: null,
+        progress: { done: 0, total: 0 },
+      },
+  });
   analyses.set(id, entry);
   return entry;
 }
@@ -47,4 +48,17 @@ export function cacheAnalysisGraph(
   entry.analysis = graphAnalysis;
 
   return entry;
+}
+
+export function updateAnalysisJob(id, job) {
+  const analysis = analyses.get(id);
+  if (!analysis) return null;
+  analysis.job = {
+    ...analysis.job,
+    ...job,
+    progress: job?.progress
+      ? { ...job.progress }
+      : { ...analysis.job.progress },
+  };
+  return analysis.job;
 }
