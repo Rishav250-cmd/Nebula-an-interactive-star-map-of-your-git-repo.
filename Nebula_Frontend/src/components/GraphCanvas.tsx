@@ -414,14 +414,18 @@ export function GraphCanvas() {
     const isHovered = id === hoveredId;
     const isSymbolPulse = symbolPulse?.id === id;
     const isRelated = relatedNodeIds.has(id);
-    const blastDistance = blastDistanceById.get(id);
     const isInSelectedCycle = selectedCycleNodeIds.has(id);
     const isImport = graphSelectedId !== null && adjacency.imports.get(graphSelectedId)?.has(id) === true;
     const isImporter = graphSelectedId !== null && adjacency.importers.get(graphSelectedId)?.has(id) === true;
+    const isDirectlyConnected = isImport || isImporter;
 
     context.save();
-    const isHighlighted = selectedCycleIndex !== null ? isInSelectedCycle : isRelated;
-    if (hasActiveFocus && !isHighlighted) context.globalAlpha = 0.12;
+    const isHighlighted = selectedCycleIndex !== null
+      ? isInSelectedCycle
+      : graphSelectedId !== null
+        ? isGraphSelected || isDirectlyConnected
+        : isRelated;
+    if (hasActiveFocus && !isHighlighted) context.globalAlpha = 0.3;
     const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.62);
     glow.addColorStop(0, withAlpha(color, 0.57));
     glow.addColorStop(0.38, withAlpha(color, 0.18));
@@ -439,7 +443,7 @@ export function GraphCanvas() {
         context.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
         context.strokeStyle = withAlpha(distance === 1 ? '#5eead4' : distance === 2 ? '#fbbf24' : '#fb7185', 0.42);
         context.lineWidth = 1 / zoomScale;
-        context.setLineDash([4 / zoomScale, 4 / zoomScale]);
+        context.setLineDash([3 / zoomScale, 4 / zoomScale]);
         context.stroke();
         context.setLineDash([]);
         context.font = `${8 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
@@ -454,25 +458,20 @@ export function GraphCanvas() {
       context.arc(node.x, node.y, rippleRadius, 0, Math.PI * 2);
       context.strokeStyle = withAlpha('#c4b5fd', 0.52 * (1 - progress));
       context.lineWidth = 2 / zoomScale;
+      context.setLineDash([2 / zoomScale, 4 / zoomScale]);
       context.stroke();
-    } else if (blastDistance !== undefined && blastDistance > 0) {
-      const blastColor = blastDistance === 1 ? '#5eead4' : blastDistance === 2 ? '#fbbf24' : '#fb7185';
-      context.beginPath();
-      context.arc(node.x, node.y, radius + (2.5 + blastDistance) / zoomScale, 0, Math.PI * 2);
-      context.strokeStyle = withAlpha(blastColor, 0.9);
-      context.lineWidth = 1.5 / zoomScale;
-      context.stroke();
+      context.setLineDash([]);
     }
 
     context.beginPath();
     context.arc(node.x, node.y, radius, 0, Math.PI * 2);
     context.fillStyle = color;
     context.shadowColor = color;
-    context.shadowBlur = 6 / zoomScale;
+    context.shadowBlur = hasActiveFocus && isHighlighted ? 12 / zoomScale : 6 / zoomScale;
     context.fill();
     context.shadowBlur = 0;
 
-    if (node.inCycle && cyclesVisible) {
+    if (node.inCycle && cyclesVisible && (!hasActiveFocus || isHighlighted)) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = withAlpha(CYCLE_COLOR, cyclePulseAlpha.current);
@@ -496,7 +495,7 @@ export function GraphCanvas() {
       context.shadowBlur = 0;
     }
 
-    if (isGraphSelected || isHovered) {
+    if (isGraphSelected || (isHovered && (!hasActiveFocus || isHighlighted))) {
       context.beginPath();
       context.arc(node.x, node.y, radius + (isGraphSelected ? 5 : 4) / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = isGraphSelected ? '#c4b5fd' : '#5eead4';
@@ -504,31 +503,12 @@ export function GraphCanvas() {
       context.stroke();
     }
 
-    if (nodeHealth?.isGodFile && isHovered) {
+    if (nodeHealth?.isGodFile && isHovered && (!hasActiveFocus || isHighlighted)) {
       context.beginPath();
       context.arc(node.x, node.y, radius + 7 / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = '#c4b5fd';
       context.lineWidth = 2 / zoomScale;
       context.stroke();
-    }
-
-    if (graphSelectedId && isRelated && !isGraphSelected) {
-      context.beginPath();
-      context.arc(node.x, node.y, radius + 2.5 / zoomScale, 0, Math.PI * 2);
-      context.strokeStyle = isImport && isImporter
-        ? '#5eead4'
-        : isImport
-          ? '#5eead4'
-          : '#fbbf24';
-      context.lineWidth = 1 / zoomScale;
-      context.stroke();
-      if (isImport && isImporter) {
-        context.beginPath();
-        context.arc(node.x, node.y, radius + 4.5 / zoomScale, 0, Math.PI * 2);
-        context.strokeStyle = '#fbbf24';
-        context.lineWidth = 1 / zoomScale;
-        context.stroke();
-      }
     }
 
     const visibleFraction = Math.min(1, Math.max(0.12, 0.12 + ((globalScale - 0.55) / 1.2) * 0.88));
