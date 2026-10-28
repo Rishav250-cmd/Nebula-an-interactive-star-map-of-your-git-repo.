@@ -111,7 +111,7 @@ test("analysis status returns 404 for unknown repositories", async () => {
   await withServer(createApp(), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/analyze/unknown/status`);
     assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), { error: "Unknown repository id" });
+    assert.equal((await response.json()).error, "Unknown repository id");
   });
 });
 

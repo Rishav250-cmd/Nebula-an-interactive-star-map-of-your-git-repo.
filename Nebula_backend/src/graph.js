@@ -1,6 +1,8 @@
-export class GraphError extends Error {
+import { NebulaError } from "../services/errors.js";
+
+export class GraphError extends NebulaError {
   constructor(statusCode, message) {
-    super(message);
+    super("INVALID_URL", { message });
     this.name = "GraphError";
     this.statusCode = statusCode;
   }

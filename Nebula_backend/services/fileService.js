@@ -3,13 +3,21 @@ import path from "node:path";
 import { shouldIgnore } from "../ignore.js";
 import { countLines } from "../utils/countLines.js";
 import { detectLanguage } from "../utils/detectLanguage.js";
+import { NebulaError } from "./errors.js";
 
 // Files bigger than this are not sent to the code panel (the graph skips them too).
 export const MAX_FILE_BYTES = 1024 * 1024;
 
-export class FileError extends Error {
+export class FileError extends NebulaError {
   constructor(statusCode, message) {
-    super(message);
+    const code = statusCode === 404
+      ? "FILE_NOT_FOUND"
+      : statusCode === 413
+        ? "FILE_TOO_LARGE"
+        : statusCode === 415
+          ? "UNSUPPORTED_FILE"
+          : "INVALID_QUERY";
+    super(code, { message });
     this.name = "FileError";
     this.statusCode = statusCode;
   }

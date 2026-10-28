@@ -2,7 +2,7 @@ import express from "express";
 import multer from "multer";
 import { rm } from "node:fs/promises";
 import { buildGraph } from "../services/analyzeService.js";
-import { extractZipArchive, ZipArchiveError } from "../services/archive.js";
+import { extractZipArchive } from "../services/archive.js";
 import {
   buildTree,
   cloneLocationForUrl,
@@ -23,6 +23,7 @@ import {
   updateAnalysisJob,
 } from "../services/store.js";
 import { GraphError } from "../src/graph.js";
+import { NebulaError } from "../services/errors.js";
 
 const githubRepositoryUrl =
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
@@ -57,8 +58,7 @@ export function createAnalyzeRouter({
 
   router.post("/analyze", async (request, response) => {
     const { url, async: asyncMode } = request.body ?? {};
-    if (!isValidRepositoryUrl(url))
-      return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     if (asyncMode === true) {
       const id = repoIdFor(url);
@@ -88,14 +88,13 @@ export function createAnalyzeRouter({
       storeAnalysisImpl(repository);
       return response.status(200).json({ id: repository.id, status: "ready" });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/analyze/:id/status", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw new NebulaError("UNKNOWN_ID");
     const job = repository.job ?? {
       status: repository.graph ? "ready" : "cloning",
       error: null,
@@ -111,8 +110,7 @@ export function createAnalyzeRouter({
 
   router.get("/progress/:id", (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw new NebulaError("UNKNOWN_ID");
 
     response.status(200);
     response.set({
@@ -214,8 +212,7 @@ export function createAnalyzeRouter({
 
   router.post("/graph", async (request, response) => {
     const { url } = request.body ?? {};
-    if (!isValidRepositoryUrl(url))
-      return response.status(400).json({ error: "Invalid GitHub URL" });
+    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     try {
       const repository = await cloneAndBuild(url);
@@ -224,22 +221,18 @@ export function createAnalyzeRouter({
         .status(200)
         .json({ ...repository.graph, id: repository.id });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.post("/upload", runZipUpload, async (request, response) => {
     if (!request.file) {
-      return response
-        .status(400)
-        .json({ error: "A ZIP file is required in the 'file' field." });
+      throw new NebulaError("BAD_UPLOAD", { message: "A ZIP file is required in the 'file' field." });
     }
 
     const fileName = request.file.originalname.split(/[\\/]/).at(-1) || "";
     if (!fileName.toLowerCase().endsWith(".zip")) {
-      return response
-        .status(400)
-        .json({ error: "Only .zip files are accepted." });
+      throw new NebulaError("BAD_UPLOAD", { message: "Only .zip files are accepted." });
     }
 
     let extracted;
@@ -263,28 +256,19 @@ export function createAnalyzeRouter({
     } catch (error) {
       if (extracted?.dir)
         await rm(extracted.dir, { recursive: true, force: true });
-      if (error instanceof ZipArchiveError) {
-        return response.status(error.statusCode).json({ error: error.message });
-      }
-      console.error(
-        "Repository upload failed:",
-        error?.message ?? String(error),
-      );
-      return response
-        .status(500)
-        .json({ error: "Could not process uploaded repository." });
+      if (error instanceof NebulaError) throw error;
+      throw new NebulaError("BAD_UPLOAD");
     }
   });
 
   router.get("/graph/:id", async (request, response) => {
     const analysis = getAnalysisImpl(request.params.id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw new NebulaError("UNKNOWN_ID");
 
     try {
       await ensureGraphAnalysis(analysis);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
 
     return response.status(200).json(analysis.graph);
@@ -293,26 +277,19 @@ export function createAnalyzeRouter({
   router.get("/callgraph", async (request, response) => {
     const { id, path: filePath, depth: rawDepth } = request.query;
     if (typeof id !== "string" || id === "")
-      return response
-        .status(400)
-        .json({ error: "The 'id' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     if (typeof filePath !== "string" || filePath === "")
-      return response
-        .status(400)
-        .json({ error: "The 'path' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'path' query parameter is required" });
     if (rawDepth !== undefined && rawDepth !== "1" && rawDepth !== "2")
-      return response.status(400).json({ error: "Depth must be 1 or 2" });
+      throw new NebulaError("INVALID_QUERY", { message: "Depth must be 1 or 2" });
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw new NebulaError("UNKNOWN_ID");
 
     try {
       await ensureGraphAnalysis(analysis);
       if (!Object.hasOwn(analysis.analysis?.files ?? {}, filePath))
-        return response
-          .status(404)
-          .json({ error: "Path is not an analyzed code file" });
+        throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not an analyzed code file" });
 
       const callGraph = buildCallGraph(
         analysis.analysis,
@@ -324,38 +301,31 @@ export function createAnalyzeRouter({
       );
       return response.status(200).json(callGraph);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/blast", async (request, response) => {
     const { id, path: filePath, depth: rawDepth } = request.query;
     if (typeof filePath !== "string" || filePath === "")
-      return response
-        .status(400)
-        .json({ error: "The 'path' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'path' query parameter is required" });
     if (typeof id !== "string" || id === "")
-      return response
-        .status(400)
-        .json({ error: "The 'id' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     if (
       rawDepth !== undefined &&
       (typeof rawDepth !== "string" || !/^[1-6]$/.test(rawDepth))
     ) {
-      return response
-        .status(400)
-        .json({ error: "Depth must be an integer from 1 to 6" });
+      throw new NebulaError("INVALID_QUERY", { message: "Depth must be an integer from 1 to 6" });
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw new NebulaError("UNKNOWN_ID");
 
     try {
       await ensureGraphAnalysis(analysis);
       const nodes = analysis.graph?.nodes ?? [];
       if (!nodes.some((node) => node.id === filePath))
-        return response.status(404).json({ error: "Path is not a graph node" });
+        throw new NebulaError("FILE_NOT_FOUND", { message: "Path is not a graph node" });
 
       const blast = computeBlast(analysis.analysis?.reverseIndex, filePath, {
         maxDepth: rawDepth === undefined ? 4 : Number(rawDepth),
@@ -370,14 +340,13 @@ export function createAnalyzeRouter({
             : Math.round((blast.count / totalFiles) * 1000) / 10,
       });
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
   router.get("/onboarding/:id", async (request, response) => {
     const repository = getAnalysisImpl(request.params.id);
-    if (!repository)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!repository) throw new NebulaError("UNKNOWN_ID");
 
     if (
       repository.onboardingCache &&
@@ -416,7 +385,7 @@ export function createAnalyzeRouter({
       };
       return response.status(200).json(result);
     } catch (error) {
-      return sendPipelineError(response, error);
+      throw pipelineError(error);
     }
   });
 
@@ -567,13 +536,9 @@ function runZipUpload(request, response, next) {
       error instanceof multer.MulterError &&
       error.code === "LIMIT_FILE_SIZE"
     ) {
-      return response
-        .status(413)
-        .json({ error: "ZIP upload exceeds the 50 MB limit." });
+      return next(new NebulaError("UPLOAD_TOO_LARGE"));
     }
-    return response
-      .status(400)
-      .json({ error: "Upload exactly one file in the 'file' field." });
+    return next(new NebulaError("BAD_UPLOAD", { message: "Upload exactly one file in the 'file' field." }));
   });
 }
 
@@ -581,30 +546,26 @@ function isValidRepositoryUrl(url) {
   return typeof url === "string" && githubRepositoryUrl.test(url);
 }
 
-function sendPipelineError(response, error) {
-  const cause = error instanceof RepositoryPipelineError ? error.cause : error;
-  if (cause instanceof GraphError)
-    return response.status(cause.statusCode).json({ error: cause.message });
-
+function pipelineError(error) {
+  if (error instanceof NebulaError) return error;
+  if (error instanceof GraphError)
+    return new NebulaError("INVALID_URL", { message: error.message });
+  if (error instanceof JobTimeoutError) return new NebulaError("JOB_TIMEOUT");
   if (error instanceof RepositoryPipelineError && error.stage === "clone") {
-    console.error("Repository clone failed:", cause?.message ?? String(cause));
-    return response
-      .status(500)
-      .json({ error: "Could not clone repo (private or not found?)" });
+    return new NebulaError("CLONE_FAILED", {
+      message: "Could not clone repo (private or not found?)",
+    });
   }
-
-  console.error(
-    "Repository graph build failed:",
-    cause?.message ?? String(cause),
-  );
-  return response
-    .status(500)
-    .json({ error: "Could not build repository graph." });
+  if (error instanceof RepositoryPipelineError && error.stage === "build") {
+    return new NebulaError("INTERNAL", { message: "Could not build repository graph." });
+  }
+  return new NebulaError("INTERNAL");
 }
 
 function getJobErrorMessage(error) {
   if (error instanceof JobTimeoutError)
     return "Analysis job exceeded the 3 minute timeout.";
+  if (error instanceof NebulaError) return error.message;
   if (error instanceof RepositoryPipelineError && error.stage === "clone")
     return "Could not clone repository.";
   if (error instanceof RepositoryPipelineError && error.stage === "build")

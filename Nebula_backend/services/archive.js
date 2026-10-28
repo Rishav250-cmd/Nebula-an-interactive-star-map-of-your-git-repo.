@@ -4,14 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { shouldIgnoreEntry } from "./ingest.js";
+import { NebulaError } from "./errors.js";
 
 const MAX_ENTRIES = 20_000;
 const MAX_UNCOMPRESSED_SIZE = 200 * 1024 * 1024;
 const ZIP_SYMLINK_MODE = 0o120000;
 
-export class ZipArchiveError extends Error {
+export class ZipArchiveError extends NebulaError {
   constructor(message, statusCode = 400) {
-    super(message);
+    super(statusCode === 413 ? "UPLOAD_TOO_LARGE" : "BAD_UPLOAD", { message });
     this.name = "ZipArchiveError";
     this.statusCode = statusCode;
   }
@@ -94,7 +95,7 @@ export async function extractZipArchive(buffer) {
   } catch (error) {
     await rm(targetDir, { recursive: true, force: true });
     if (error instanceof ZipArchiveError) throw error;
-    throw new ZipArchiveError(`Could not safely extract ZIP archive: ${error.message}`);
+    throw new ZipArchiveError("Could not safely extract ZIP archive.");
   }
 }
 

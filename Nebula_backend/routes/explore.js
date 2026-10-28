@@ -1,11 +1,12 @@
 import express from "express";
 import pathModule from "node:path";
-import { FileError, readRepoFile } from "../services/fileService.js";
+import { readRepoFile } from "../services/fileService.js";
 import { listFiles } from "../services/ingest.js";
 import { searchFiles, searchSymbols } from "../services/searchService.js";
 import { listSymbols } from "../services/symbolService.js";
 import { parseFile } from "../services/parser.js";
 import { getAnalysis } from "../services/store.js";
+import { NebulaError } from "../services/errors.js";
 
 const MAX_QUERY_LENGTH = 200;
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
@@ -41,14 +42,11 @@ export function createExploreRouter({
       typeof path !== "string" ||
       path === ""
     ) {
-      return response
-        .status(400)
-        .json({ error: "Both 'id' and 'path' query parameters are required" });
+      throw new NebulaError("INVALID_QUERY", { message: "Both 'id' and 'path' query parameters are required" });
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw new NebulaError("UNKNOWN_ID");
 
     try {
       const result = await readRepoFile(analysis.dir, path);
@@ -68,30 +66,24 @@ export function createExploreRouter({
         : [];
       return response.status(200).json({ ...result, functions });
     } catch (error) {
-      if (error instanceof FileError)
-        return response.status(error.statusCode).json({ error: error.message });
-      console.error("Reading file failed:", error?.message ?? String(error));
-      return response.status(500).json({ error: "Could not read file." });
+      throw error;
     }
   });
 
   router.get("/search", async (request, response) => {
     const { id, q } = request.query;
     if (typeof id !== "string" || id === "") {
-      return response
-        .status(400)
-        .json({ error: "The 'id' query parameter is required" });
+      throw new NebulaError("INVALID_QUERY", { message: "The 'id' query parameter is required" });
     }
     if (
       q !== undefined &&
       (typeof q !== "string" || q.length > MAX_QUERY_LENGTH)
     ) {
-      return response.status(400).json({ error: "Invalid search query" });
+      throw new NebulaError("INVALID_QUERY", { message: "Invalid search query" });
     }
 
     const analysis = getAnalysisImpl(id);
-    if (!analysis)
-      return response.status(404).json({ error: "Unknown repository id" });
+    if (!analysis) throw new NebulaError("UNKNOWN_ID");
 
     try {
       const files = await getFileList(analysis);
@@ -102,10 +94,7 @@ export function createExploreRouter({
       const symbolMatches = searchSymbols(symbols, query, 10);
       return response.status(200).json([...fileMatches, ...symbolMatches]);
     } catch (error) {
-      console.error("Search failed:", error?.message ?? String(error));
-      return response
-        .status(500)
-        .json({ error: "Could not search repository." });
+      throw error;
     }
   });
 

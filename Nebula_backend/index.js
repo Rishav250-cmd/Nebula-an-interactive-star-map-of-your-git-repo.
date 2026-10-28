@@ -1,4 +1,7 @@
 import app from "./app.js";
+import { installProcessErrorHandlers } from "./services/errors.js";
+
+installProcessErrorHandlers();
 
 const port = process.env.PORT || 5001;
 

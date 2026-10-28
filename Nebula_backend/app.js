@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createAnalyzeRouter } from "./routes/analyze.js";
 import { createExploreRouter } from "./routes/explore.js";
 import { createInsightsRouter } from "./routes/insights.js";
+import { NebulaError, errorMiddleware } from "./services/errors.js";
 
 const mockGraphPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../docs/mock-graph.json");
 
@@ -30,6 +31,10 @@ export function createApp(options = {}) {
   app.use("/api", createAnalyzeRouter(options));
   app.use("/api", createExploreRouter(options));
   app.use("/api", createInsightsRouter(options));
+  app.use("/api", (_request, _response, next) => {
+    next(new NebulaError("UNKNOWN_ROUTE"));
+  });
+  app.use(errorMiddleware({ logger: options.errorLogger ?? console.error }));
 
   return app;
 }
