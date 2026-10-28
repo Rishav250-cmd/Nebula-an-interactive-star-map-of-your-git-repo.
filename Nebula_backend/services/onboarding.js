@@ -195,6 +195,7 @@ function isCandidate(node) {
     CODE_EXTENSIONS.has(path.posix.extname(id).toLowerCase()) &&
     !/\.(?:test|spec)\./i.test(id) &&
     !/(?:^|\/)(?:__tests__|__mocks__|tests?)(?:\/|$)/i.test(id) &&
+    !/(?:^|\/)(?:test|tests)[-_][^/]*(?:\/|$)/i.test(id) &&
     !segments.some(
       (segment) =>
         segment === "dist" ||

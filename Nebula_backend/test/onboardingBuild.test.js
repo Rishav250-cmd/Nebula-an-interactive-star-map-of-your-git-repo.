@@ -12,6 +12,7 @@ test("buildOnboarding chooses a preferred entry and orders imports by depth", ()
       node("src/a-helper.js", { fanIn: 1 }),
       node("src/nested.js", { fanIn: 1 }),
       node("src/__tests__/main.test.js", { fanIn: 1 }),
+      node("test-d/integration.ts", { fanIn: 1 }),
       node("dist/bundle.js", { fanIn: 1 }),
       node("src/client.generated.ts", { fanIn: 1 }),
     ],
@@ -38,6 +39,7 @@ test("buildOnboarding chooses a preferred entry and orders imports by depth", ()
     ],
   );
   assert.ok(result.path.every((step) => !step.id.includes("test")));
+  assert.ok(result.safeStarters.every(({ id }) => !id.startsWith("test-d/")));
   assert.deepEqual(
     result.safeStarters.map(({ id }) => id),
     [
