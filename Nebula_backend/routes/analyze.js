@@ -11,6 +11,8 @@ import {
 } from "../services/ingest.js";
 import { buildCallGraph } from "../services/callgraph.js";
 import { computeBlast } from "../services/blast.js";
+import { fetchGoodFirstIssues, parseGitHubRepo } from "../services/github.js";
+import { buildOnboarding } from "../services/onboarding.js";
 import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
 import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
 import {
@@ -40,6 +42,8 @@ export function createAnalyzeRouter({
   getAnalysisImpl = getAnalysis,
   storeAnalysisImpl = storeAnalysis,
   cacheAnalysisGraphImpl = cacheAnalysisGraph,
+  fetchGoodFirstIssuesImpl = fetchGoodFirstIssues,
+  buildOnboardingImpl = buildOnboarding,
 } = {}) {
   const router = express.Router();
 
@@ -214,6 +218,52 @@ export function createAnalyzeRouter({
             ? 0
             : Math.round((blast.count / totalFiles) * 1000) / 10,
       });
+    } catch (error) {
+      return sendPipelineError(response, error);
+    }
+  });
+
+  router.get("/onboarding/:id", async (request, response) => {
+    const repository = getAnalysisImpl(request.params.id);
+    if (!repository)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    if (
+      repository.onboardingCache &&
+      repository.onboardingCache.expiresAt > Date.now()
+    ) {
+      return response.status(200).json(repository.onboardingCache.response);
+    }
+
+    try {
+      await ensureGraphAnalysis(repository);
+      let issueResult = { status: "none", issues: [], resetAt: null };
+      const parsedRepo = parseGitHubRepo(repository.url);
+      if (parsedRepo) {
+        try {
+          issueResult = await fetchGoodFirstIssuesImpl(
+            parsedRepo.owner,
+            parsedRepo.repo,
+          );
+        } catch {
+          issueResult = { status: "unavailable", issues: [], resetAt: null };
+        }
+      }
+      const onboarding = buildOnboardingImpl({
+        graph: repository.graph,
+        analysis: repository.analysis,
+        issues: Array.isArray(issueResult?.issues) ? issueResult.issues : [],
+      });
+      const result = {
+        ...onboarding,
+        issuesStatus: issueResult?.status ?? "unavailable",
+        issuesResetAt: issueResult?.resetAt ?? null,
+      };
+      repository.onboardingCache = {
+        response: result,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      };
+      return response.status(200).json(result);
     } catch (error) {
       return sendPipelineError(response, error);
     }

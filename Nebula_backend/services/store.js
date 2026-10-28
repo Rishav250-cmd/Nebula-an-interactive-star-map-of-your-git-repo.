@@ -13,6 +13,7 @@ export function storeAnalysis({
     url,
     graph: graph ?? null,
     analysis: graphAnalysis ?? null,
+    onboardingCache: null,
   };
   analyses.set(id, entry);
   return entry;
