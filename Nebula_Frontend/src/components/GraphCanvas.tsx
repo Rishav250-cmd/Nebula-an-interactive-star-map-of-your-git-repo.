@@ -16,16 +16,18 @@ import { applyFilters } from '../lib/applyFilters';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 import { buildAdjacency } from '../lib/graphHighlight';
-import { fetchHealth } from '../api/client';
 import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
+import {
+  GRAPH_PERFORMANCE_THRESHOLDS,
+  graphPerformanceForNodeCount,
+} from '../lib/graphPerformance';
+import { buildFolderGraphData, topLevelFolder } from '../lib/folderGraph';
 type GraphInstance = ForceGraphMethods<
   NodeObject<GraphNode>,
   LinkObject<GraphNode, GraphEdge>
 >;
 
 type EdgeDirection = 'outgoing' | 'incoming' | 'unrelated';
-type LabelBounds = { left: number; top: number; right: number; bottom: number };
-
 function nodeImportance(node: GraphNode): number {
   const fanIn = Number.isFinite(node.fanIn) ? Math.max(0, node.fanIn) : 0;
   const fanOut = Number.isFinite(node.fanOut) ? Math.max(0, node.fanOut) : 0;
@@ -81,12 +83,20 @@ function edgeDirection(link: LinkEndpoints, selectedId: string | null): EdgeDire
 }
 
 function withAlpha(color: string, alpha: number): string {
+  const normalizedAlpha = Math.round(alpha * 100) / 100;
+  const cacheKey = `${color}:${normalizedAlpha}`;
+  const cachedColor = alphaColorCache.get(cacheKey);
+  if (cachedColor) return cachedColor;
   const hex = color.slice(1);
   const red = Number.parseInt(hex.slice(0, 2), 16);
   const green = Number.parseInt(hex.slice(2, 4), 16);
   const blue = Number.parseInt(hex.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  const result = `rgba(${red}, ${green}, ${blue}, ${normalizedAlpha})`;
+  alphaColorCache.set(cacheKey, result);
+  return result;
 }
+
+const alphaColorCache = new Map<string, string>();
 
 function healthColor(score: number | null): string {
   if (score === null) return '#94a3b8';
@@ -100,8 +110,10 @@ export function GraphCanvas() {
   const analysisId = useGraphStore((state) => state.analysisId);
   const healthReport = useGraphStore((state) => state.healthReport);
   const setHealthReport = useGraphStore((state) => state.setHealthReport);
+  const loadHealthReport = useGraphStore((state) => state.loadHealthReport);
   const phase = useGraphStore((state) => state.phase);
   const phaseStartedAt = useGraphStore((state) => state.phaseStartedAt);
+  const analysisProgress = useGraphStore((state) => state.analysisProgress);
   const error = useGraphStore((state) => state.error);
   const lastUrl = useGraphStore((state) => state.lastUrl);
   const analyze = useGraphStore((state) => state.analyze);
@@ -124,12 +136,18 @@ export function GraphCanvas() {
   const containerRef = useRef<HTMLElement | null>(null);
   const graphRef = useRef<GraphInstance | undefined>(undefined);
   const hasFittedGraph = useRef(false);
+  const reheatedGraph = useRef(graph);
   const handledFocusRequest = useRef(focusRequest);
-  const labelBounds = useRef<LabelBounds[]>([]);
+  const labelBounds = useRef(new Float32Array(0));
+  const labelBoundsCount = useRef(0);
+  const renderedNodes = useRef<NodeObject<GraphNode>[]>([]);
   const cyclePulseAlpha = useRef(0.35);
   const handledSymbolFocusRequest = useRef(focusRequest);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [symbolPulse, setSymbolPulse] = useState<{ id: string; startedAt: number } | null>(null);
+  const [groupByFolderOverride, setGroupByFolderOverride] = useState<boolean | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const nodePositions = useRef(new Map<string, { x: number; y: number }>());
 
   useEffect(() => {
     if (!analysisId) {
@@ -137,34 +155,105 @@ export function GraphCanvas() {
       return undefined;
     }
     const controller = new AbortController();
-    fetchHealth(analysisId, controller.signal)
-      .then((report) => setHealthReport(report))
-      .catch(() => {
-        if (controller.signal.aborted) return;
-        setHealthReport(null);
-      });
+    void loadHealthReport(controller.signal);
     return () => controller.abort();
-  }, [analysisId, setHealthReport]);
+  }, [analysisId, loadHealthReport, setHealthReport]);
 
   // The graph without the files hidden in the filter panel (same object when no filter is active).
   const visibleGraph = useMemo(() => applyFilters(graph, filters), [graph, filters]);
+  const groupByFolder = groupByFolderOverride
+    ?? ((graph?.nodes.length ?? 0) > GRAPH_PERFORMANCE_THRESHOLDS.simplifiedRendering);
+
+  const rememberNodePositions = useCallback(() => {
+    for (const node of renderedNodes.current) {
+      if (
+        node.id !== undefined
+        && typeof node.x === 'number' && Number.isFinite(node.x)
+        && typeof node.y === 'number' && Number.isFinite(node.y)
+      ) nodePositions.current.set(String(node.id), { x: node.x, y: node.y });
+    }
+  }, []);
+
+  const toggleFolderExpansion = useCallback((folder: string) => {
+    rememberNodePositions();
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
+  }, [rememberNodePositions]);
+
+  const toggleFolderGrouping = useCallback(() => {
+    rememberNodePositions();
+    setExpandedFolders(new Set());
+    setGroupByFolderOverride(!groupByFolder);
+  }, [groupByFolder, rememberNodePositions]);
+
+  useEffect(() => {
+    nodePositions.current.clear();
+    setExpandedFolders((current) => current.size === 0 ? current : new Set());
+    setGroupByFolderOverride(null);
+  }, [graph]);
 
   const graphData = useMemo<ForceGraphData<GraphNode, GraphEdge>>(
     () => {
       // ForceGraph mutates nodes and links with simulation coordinates.
-      const nodes = visibleGraph?.nodes
-        .map((node) => ({ ...node }))
-        .sort((left, right) => (
-          nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
-        )) ?? [];
+      const fileNodes = visibleGraph?.nodes ?? [];
+      let nodes: NodeObject<GraphNode>[];
+      let links: GraphEdge[];
+
+      if (!groupByFolder) {
+        nodes = fileNodes.map((node) => {
+          const position = nodePositions.current.get(node.id);
+          return position ? { ...node, ...position } : { ...node };
+        });
+        links = visibleGraph?.edges ?? [];
+      } else {
+        const grouped = buildFolderGraphData(
+          fileNodes,
+          visibleGraph?.edges ?? [],
+          expandedFolders,
+          nodePositions.current,
+        );
+        nodes = grouped.nodes;
+        links = grouped.links;
+      }
+
+      nodes.sort((left, right) => (
+        nodeImportance(right) - nodeImportance(left) || left.id.localeCompare(right.id)
+      ));
       const nodeIds = new Set(nodes.map((node) => node.id));
       return {
         nodes,
-        links: uniqueLinks(visibleGraph?.edges ?? [], nodeIds),
+        links: uniqueLinks(links, nodeIds),
       };
     },
-    [visibleGraph],
+    [expandedFolders, groupByFolder, visibleGraph],
   );
+  renderedNodes.current = graphData.nodes;
+  const performanceNodeCount = Math.max(
+    graphData.nodes.length,
+    groupByFolder ? graph?.nodes.length ?? 0 : 0,
+  );
+  const performanceMode = graphPerformanceForNodeCount(performanceNodeCount);
+  const nodeRenderData = useMemo(() => new Map(graphData.nodes.map((node) => [
+    node.id,
+    {
+      radius: node.isFolderGroup
+        ? Math.min(28, 9 + Math.sqrt(Math.max(0, node.loc)) * 0.08)
+        : nodeRadius(node.loc),
+      label: truncateLabel(node.isFolderGroup
+        ? `${node.folder === '.' ? 'Root' : node.folder} · ${node.fileCount ?? 0}`
+        : node.id.split('/').pop() ?? ''),
+    },
+  ] as const)), [graphData]);
+  const truncatedCounts = graph?.meta?.truncated
+    ? {
+      analyzed: graph.meta.analyzedFiles ?? graph.nodes.length,
+      total: graph.meta.totalCodeFiles ?? graph.nodes.length,
+    }
+    : null;
   const labelPriority = useMemo(
     () => new Map(graphData.nodes.map((node, index) => [node.id, index] as const)),
     [graphData],
@@ -175,17 +264,34 @@ export function GraphCanvas() {
     [...new Set(allFolders)].map((folder) => [folder, folderColor(folder, allFolders)] as const),
   ), [allFolders]);
   const colorById = useMemo(() => new Map(
-    graph?.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const) ?? [],
-  ), [colorByFolder, graph]);
+    graphData.nodes.map((node) => [node.id, colorByFolder.get(node.folder) ?? '#a0aec0'] as const),
+  ), [colorByFolder, graphData]);
   const healthById = useMemo(() => new Map(
     healthReport?.files.map((file) => [file.id, file] as const) ?? [],
   ), [healthReport]);
+  const graphNodeById = useMemo(() => new Map(
+    graph?.nodes.map((node) => [node.id, node] as const) ?? [],
+  ), [graph]);
   const healthScoreById = useMemo(() => new Map(
-    graph?.nodes.map((node) => [
-      node.id,
-      healthById.get(node.id)?.healthScore ?? node.healthScore ?? null,
-    ] as const) ?? [],
-  ), [graph, healthById]);
+    graphData.nodes.map((node) => {
+      if (node.isFolderGroup) {
+        let scoreTotal = 0;
+        let scoreCount = 0;
+        for (const memberId of node.memberIds ?? []) {
+          const score = healthById.get(memberId)?.healthScore
+            ?? graphNodeById.get(memberId)?.healthScore;
+          if (score === null || score === undefined) continue;
+          scoreTotal += score;
+          scoreCount += 1;
+        }
+        return [node.id, scoreCount > 0 ? scoreTotal / scoreCount : null] as const;
+      }
+      return [
+        node.id,
+        healthById.get(node.id)?.healthScore ?? node.healthScore ?? null,
+      ] as const;
+    }),
+  ), [graphData, graphNodeById, healthById]);
   const legend = useMemo(() => folderLegend(allFolders, 8), [allFolders]);
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const graphSelectedId = graph?.nodes.some((node) => node.id === selectedId) ? selectedId : null;
@@ -199,7 +305,7 @@ export function GraphCanvas() {
     [graphData],
   );
   const hasCycleEdges = cycleEdgeCount > 0;
-  const animateCyclePulse = cycleEdgeCount <= 300;
+  const animateCyclePulse = cycleEdgeCount <= 300 && performanceMode.tier === 'full';
 
   const blastDistanceById = useMemo(() => {
     const distances = new Map<string, number>();
@@ -290,9 +396,9 @@ export function GraphCanvas() {
   }, [visibleGraph]);
 
   useEffect(() => {
-    if (!hasFittedGraph.current || graphData.nodes.length === 0) return;
+    if (groupByFolder || !hasFittedGraph.current || graphData.nodes.length === 0) return;
     graphRef.current?.zoomToFit(600, 60);
-  }, [canvasSize.height, canvasSize.width, graphData.nodes.length]);
+  }, [canvasSize.height, canvasSize.width, graphData.nodes.length, groupByFolder]);
 
   useEffect(() => {
     const graphInstance = graphRef.current;
@@ -300,22 +406,44 @@ export function GraphCanvas() {
 
     graphInstance.d3Force(
       'collide',
-      forceCollide<NodeObject<GraphNode>>((node) => nodeRadius(node.loc) + 3),
+      forceCollide<NodeObject<GraphNode>>((node) => (nodeRenderData.get(String(node.id))?.radius ?? 3) + 3),
     );
     graphInstance.d3Force('charge')?.strength(graphData.nodes.length > 40 ? -34 : -30);
-    graphInstance.d3ReheatSimulation();
-  }, [graphData]);
+    if (reheatedGraph.current !== graph) {
+      reheatedGraph.current = graph;
+      graphInstance.d3ReheatSimulation();
+    }
+  }, [graph, graphData, nodeRenderData]);
+
+  const groupLayoutKey = `${groupByFolder ? 'grouped' : 'files'}:${[...expandedFolders].sort().join('|')}`;
+  const previousGroupLayoutKey = useRef(groupLayoutKey);
+  useEffect(() => {
+    if (previousGroupLayoutKey.current === groupLayoutKey) return;
+    previousGroupLayoutKey.current = groupLayoutKey;
+    graphRef.current?.d3ReheatSimulation();
+  }, [groupLayoutKey]);
 
   useEffect(() => {
     if (
       focusRequest === handledFocusRequest.current
       || !selectedId
       || graphData.nodes.length === 0
+      || viewMode === 'function'
     ) return;
-    handledFocusRequest.current = focusRequest;
+
+    const selectedFile = graph?.nodes.find((candidate) => candidate.id === selectedId);
+    if (groupByFolder && selectedFile) {
+      const folder = topLevelFolder(selectedFile.folder);
+      if (!expandedFolders.has(folder)) {
+        rememberNodePositions();
+        setExpandedFolders((current) => new Set(current).add(folder));
+        return;
+      }
+    }
 
     const node = graphData.nodes.find((candidate) => candidate.id === selectedId);
     if (!node) return;
+    handledFocusRequest.current = focusRequest;
 
     const startedAt = performance.now();
     let lastX: number | null = null;
@@ -346,7 +474,7 @@ export function GraphCanvas() {
 
     frameId = requestAnimationFrame(focusSelectedNode);
     return () => cancelAnimationFrame(frameId);
-  }, [focusRequest, graphData.nodes, selectedId]);
+  }, [expandedFolders, focusRequest, graph, graphData.nodes, groupByFolder, rememberNodePositions, selectedId, viewMode]);
 
   useEffect(() => {
     if (selectedCycleIndex === null) return;
@@ -408,8 +536,7 @@ export function GraphCanvas() {
       ? healthColor(healthScoreById.get(id) ?? null)
       : colorById.get(id) ?? '#a0aec0';
     const zoomScale = Math.max(globalScale, 0.01);
-    const loc = Number.isFinite(node.loc) ? Math.max(0, node.loc) : 0;
-    const radius = nodeRadius(loc);
+    const radius = nodeRenderData.get(id)?.radius ?? 3;
     const isGraphSelected = id === graphSelectedId;
     const isHovered = id === hoveredId;
     const isSymbolPulse = symbolPulse?.id === id;
@@ -426,14 +553,16 @@ export function GraphCanvas() {
         ? isGraphSelected || isDirectlyConnected
         : isRelated;
     if (hasActiveFocus && !isHighlighted) context.globalAlpha = 0.3;
-    const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.62);
-    glow.addColorStop(0, withAlpha(color, 0.57));
-    glow.addColorStop(0.38, withAlpha(color, 0.18));
-    glow.addColorStop(1, withAlpha(color, 0));
-    context.fillStyle = glow;
-    context.beginPath();
-    context.arc(node.x, node.y, radius * 1.62, 0, Math.PI * 2);
-    context.fill();
+    if (performanceMode.tier === 'full') {
+      const glow = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.62);
+      glow.addColorStop(0, withAlpha(color, 0.57));
+      glow.addColorStop(0.38, withAlpha(color, 0.18));
+      glow.addColorStop(1, withAlpha(color, 0));
+      context.fillStyle = glow;
+      context.beginPath();
+      context.arc(node.x, node.y, radius * 1.62, 0, Math.PI * 2);
+      context.fill();
+    }
 
     if (graphSelectedId === id && blastDistanceById.size > 1) {
       for (let distance = 1; distance <= 4; distance += 1) {
@@ -443,31 +572,35 @@ export function GraphCanvas() {
         context.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
         context.strokeStyle = withAlpha(distance === 1 ? '#5eead4' : distance === 2 ? '#fbbf24' : '#fb7185', 0.42);
         context.lineWidth = 1 / zoomScale;
-        context.setLineDash([3 / zoomScale, 4 / zoomScale]);
+        if (performanceMode.tier === 'full') context.setLineDash([3 / zoomScale, 4 / zoomScale]);
         context.stroke();
-        context.setLineDash([]);
+        if (performanceMode.tier === 'full') context.setLineDash([]);
         context.font = `${8 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
         context.textAlign = 'left';
         context.textBaseline = 'middle';
         context.fillStyle = 'rgba(226, 232, 240, 0.78)';
         context.fillText(`${distance} hop · ${blastCounts[distance]}`, node.x + ringRadius, node.y);
       }
-      const progress = ((performance.now() % 1700) / 1700);
-      const rippleRadius = radius + (progress * 78) / zoomScale;
-      context.beginPath();
-      context.arc(node.x, node.y, rippleRadius, 0, Math.PI * 2);
-      context.strokeStyle = withAlpha('#c4b5fd', 0.52 * (1 - progress));
-      context.lineWidth = 2 / zoomScale;
-      context.setLineDash([2 / zoomScale, 4 / zoomScale]);
-      context.stroke();
-      context.setLineDash([]);
+      if (performanceMode.tier === 'full') {
+        const progress = ((performance.now() % 1700) / 1700);
+        const rippleRadius = radius + (progress * 78) / zoomScale;
+        context.beginPath();
+        context.arc(node.x, node.y, rippleRadius, 0, Math.PI * 2);
+        context.strokeStyle = withAlpha('#c4b5fd', 0.52 * (1 - progress));
+        context.lineWidth = 2 / zoomScale;
+        context.setLineDash([2 / zoomScale, 4 / zoomScale]);
+        context.stroke();
+        context.setLineDash([]);
+      }
     }
 
     context.beginPath();
     context.arc(node.x, node.y, radius, 0, Math.PI * 2);
     context.fillStyle = color;
     context.shadowColor = color;
-    context.shadowBlur = hasActiveFocus && isHighlighted ? 12 / zoomScale : 6 / zoomScale;
+    context.shadowBlur = performanceMode.tier === 'full'
+      ? (hasActiveFocus && isHighlighted ? 12 / zoomScale : 6 / zoomScale)
+      : 0;
     context.fill();
     context.shadowBlur = 0;
 
@@ -477,20 +610,20 @@ export function GraphCanvas() {
       context.strokeStyle = withAlpha(CYCLE_COLOR, cyclePulseAlpha.current);
       context.lineWidth = 2 / zoomScale;
       context.shadowColor = CYCLE_COLOR;
-      context.shadowBlur = 8 / zoomScale;
+      context.shadowBlur = performanceMode.tier === 'full' ? 8 / zoomScale : 0;
       context.stroke();
       context.shadowBlur = 0;
     }
 
     if (isSymbolPulse && symbolPulse) {
       const elapsed = performance.now() - symbolPulse.startedAt;
-      const wave = 0.5 + 0.5 * Math.sin(elapsed / 95);
+      const wave = performanceMode.tier === 'full' ? 0.5 + 0.5 * Math.sin(elapsed / 95) : 0;
       context.beginPath();
       context.arc(node.x, node.y, radius + (8 + wave * 5) / zoomScale, 0, Math.PI * 2);
       context.strokeStyle = withAlpha('#e9d5ff', 0.35 + wave * 0.6);
       context.lineWidth = (1.6 + wave * 1.3) / zoomScale;
       context.shadowColor = '#c4b5fd';
-      context.shadowBlur = (8 + wave * 8) / zoomScale;
+      context.shadowBlur = performanceMode.tier === 'full' ? (8 + wave * 8) / zoomScale : 0;
       context.stroke();
       context.shadowBlur = 0;
     }
@@ -514,35 +647,43 @@ export function GraphCanvas() {
     const visibleFraction = Math.min(1, Math.max(0.12, 0.12 + ((globalScale - 0.55) / 1.2) * 0.88));
     const visibleLabelCount = Math.ceil(graphData.nodes.length * visibleFraction);
     const isImportantAtCurrentZoom = (labelPriority.get(id) ?? Number.MAX_SAFE_INTEGER) < visibleLabelCount;
-    const shouldDrawLabel = isGraphSelected
-      || isImport
-      || isImporter
-      || isHovered
-      || isImportantAtCurrentZoom;
+    const shouldDrawLabel = performanceMode.tier === 'full'
+      ? isGraphSelected || isImport || isImporter || isHovered || isImportantAtCurrentZoom
+      : isGraphSelected || isHovered || (globalScale >= 1.35 && isImportantAtCurrentZoom);
 
     if (shouldDrawLabel) {
-      const fileName = truncateLabel(node.id?.toString().split('/').pop() ?? '');
+      const fileName = nodeRenderData.get(id)?.label ?? '';
       context.font = `${11 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
       context.textAlign = 'left';
       context.textBaseline = 'middle';
       const labelX = node.x + radius + 6 / zoomScale;
       const labelWidth = context.measureText(fileName).width;
       const labelHeight = 12 / zoomScale;
-      const bounds = {
-        left: labelX,
-        top: node.y - labelHeight / 2,
-        right: labelX + labelWidth,
-        bottom: node.y + labelHeight / 2,
-      };
-      const overlapsLabel = labelBounds.current.some((existing) => (
-        bounds.left < existing.right
-        && bounds.right > existing.left
-        && bounds.top < existing.bottom
-        && bounds.bottom > existing.top
-      ));
+      const left = labelX;
+      const top = node.y - labelHeight / 2;
+      const right = labelX + labelWidth;
+      const bottom = node.y + labelHeight / 2;
+      let overlapsLabel = false;
+      for (let index = 0; index < labelBoundsCount.current; index += 1) {
+        const offset = index * 4;
+        if (
+          left < labelBounds.current[offset + 2]
+          && right > labelBounds.current[offset]
+          && top < labelBounds.current[offset + 3]
+          && bottom > labelBounds.current[offset + 1]
+        ) {
+          overlapsLabel = true;
+          break;
+        }
+      }
 
       if (!overlapsLabel) {
-        labelBounds.current.push(bounds);
+        const offset = labelBoundsCount.current * 4;
+        labelBounds.current[offset] = left;
+        labelBounds.current[offset + 1] = top;
+        labelBounds.current[offset + 2] = right;
+        labelBounds.current[offset + 3] = bottom;
+        labelBoundsCount.current += 1;
         context.fillStyle = isGraphSelected
           ? '#f8fafc'
           : isImport
@@ -557,14 +698,17 @@ export function GraphCanvas() {
     }
 
     context.restore();
-  }, [adjacency, blastCounts, blastDistanceById, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, healthById, healthScoreById, hoveredId, labelPriority, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse, viewMode]);
+  }, [adjacency, blastCounts, blastDistanceById, colorById, cyclesVisible, graphData.nodes.length, graphSelectedId, hasActiveFocus, healthById, healthScoreById, hoveredId, labelPriority, nodeRenderData, performanceMode.tier, relatedNodeIds, selectedCycleIndex, selectedCycleNodeIds, symbolPulse, viewMode]);
 
   const resetLabelBounds = useCallback(() => {
-    labelBounds.current = [];
+    if (labelBounds.current.length < graphData.nodes.length * 4) {
+      labelBounds.current = new Float32Array(graphData.nodes.length * 4);
+    }
+    labelBoundsCount.current = 0;
     cyclePulseAlpha.current = animateCyclePulse
       ? 0.35 + 0.35 * Math.sin(performance.now() / 450)
       : 0.62;
-  }, [animateCyclePulse]);
+  }, [animateCyclePulse, graphData.nodes.length]);
 
   const getLinkColor = useCallback((link: LinkEndpoints) => {
     if (link.inCycle === true && cyclesVisible) {
@@ -579,18 +723,24 @@ export function GraphCanvas() {
   }, [colorById, cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
 
   const getLinkWidth = useCallback((link: LinkEndpoints) => {
+    if (performanceMode.tier !== 'full') {
+      if (hasActiveFocus && !isHighlightedLink(link)) return 0.3;
+      const aggregateCount = typeof link.aggregateCount === 'number' ? link.aggregateCount : 1;
+      const aggregateWidth = 0.4 + Math.log2(aggregateCount) * 0.14;
+      return Math.min(link.inCycle === true && cyclesVisible ? 1.2 : 1, aggregateWidth);
+    }
     if (hasActiveFocus && !isHighlightedLink(link)) return 0.35;
     if (link.inCycle === true && cyclesVisible) return 1.9;
     return edgeDirection(link, graphSelectedId) === 'unrelated'
       ? (hasActiveFocus ? 0.35 : 0.7)
       : 1.8;
-  }, [cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink]);
+  }, [cyclesVisible, graphSelectedId, hasActiveFocus, isHighlightedLink, performanceMode.tier]);
 
   const getLinkParticles = useCallback((link: LinkEndpoints) => {
-    if ((graph?.edges.length ?? 0) > 1500) return 0;
+    if (performanceMode.tier !== 'full') return 0;
     if (hasActiveFocus && !isHighlightedLink(link)) return 0;
     return 2;
-  }, [graph?.edges.length, hasActiveFocus, isHighlightedLink]);
+  }, [hasActiveFocus, isHighlightedLink, performanceMode.tier]);
 
   const getParticleColor = useCallback((link: LinkEndpoints) => {
     if (link.inCycle === true && cyclesVisible) return CYCLE_COLOR;
@@ -616,12 +766,26 @@ export function GraphCanvas() {
     context.moveTo(source.x, source.y);
     context.lineTo(target.x, target.y);
     context.strokeStyle = withAlpha(CYCLE_COLOR, alpha);
-    context.lineWidth = 3.2 / scale;
+    context.lineWidth = performanceMode.tier === 'full' ? 3.2 / scale : 1.2 / scale;
     context.shadowColor = CYCLE_COLOR;
-    context.shadowBlur = 9 / scale;
+    context.shadowBlur = performanceMode.tier === 'full' ? 9 / scale : 0;
     context.stroke();
     context.restore();
-  }, [cyclesVisible, hasActiveFocus, isHighlightedLink]);
+  }, [cyclesVisible, hasActiveFocus, isHighlightedLink, performanceMode.tier]);
+
+  const paintNodePointerArea = useCallback((
+    node: NodeObject<GraphNode>,
+    paintColor: string,
+    context: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => {
+    if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
+    const radius = nodeRenderData.get(String(node.id))?.radius ?? 3;
+    context.fillStyle = paintColor;
+    context.beginPath();
+    context.arc(node.x, node.y, Math.max(radius, 5 / Math.max(globalScale, 0.01)), 0, Math.PI * 2);
+    context.fill();
+  }, [nodeRenderData]);
 
   const isLinkVisible = useCallback((link: LinkEndpoints) => (
     (link.inCycle === true && cyclesVisible) || importsVisible
@@ -702,13 +866,23 @@ export function GraphCanvas() {
         >
           Cycles
         </button>
+        <button
+          type="button"
+          className="folder-group-toggle"
+          aria-pressed={groupByFolder}
+          disabled={viewMode === 'function'}
+          title="Show one node per top-level folder"
+          onClick={toggleFolderGrouping}
+        >
+          Group by folder
+        </button>
       </div>
       )}
       {phase === 'idle' && !graph && (
         <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
       {(phase === 'cloning' || phase === 'parsing') && (
-        <LoadingOverlay phase={phase} phaseStartedAt={phaseStartedAt} />
+        <LoadingOverlay phase={phase} phaseStartedAt={phaseStartedAt} progress={analysisProgress} />
       )}
       {phase === 'error' && (
         <ErrorState
@@ -716,6 +890,11 @@ export function GraphCanvas() {
           lastUrl={lastUrl}
           onRetry={(url) => { void analyze(url); }}
         />
+      )}
+      {truncatedCounts && phase === 'ready' && (
+        <div className="large-repo-banner" role="status">
+          Large repo: showing the {truncatedCounts.analyzed.toLocaleString()} most relevant files of {truncatedCounts.total.toLocaleString()}
+        </div>
       )}
       {viewMode === 'function' && phase === 'ready' && graph && (
         <FunctionGraphCanvas />
@@ -730,27 +909,33 @@ export function GraphCanvas() {
           backgroundColor="rgba(0, 0, 0, 0)"
           onRenderFramePre={resetLabelBounds}
           nodeCanvasObject={drawNode}
+          nodePointerAreaPaint={paintNodePointerArea}
           linkCanvasObjectMode="after"
           linkCanvasObject={drawCycleLink}
           linkVisibility={isLinkVisible}
-          autoPauseRedraw={(
+          autoPauseRedraw={performanceMode.tier !== 'full' || !(
             (hasCycleEdges && cyclesVisible && animateCyclePulse)
             || symbolPulse !== null
             || graphSelectedId !== null
-          ) ? false : undefined}
+          )}
           linkColor={getLinkColor}
           linkWidth={getLinkWidth}
-          linkDirectionalArrowLength={4}
+          linkDirectionalArrowLength={performanceMode.tier === 'full' ? 4 : 0}
           linkDirectionalArrowColor={getLinkColor}
           linkDirectionalArrowRelPos={1}
           linkDirectionalParticles={getLinkParticles}
           linkDirectionalParticleSpeed={0.006}
           linkDirectionalParticleWidth={1.6}
           linkDirectionalParticleColor={getParticleColor}
+          warmupTicks={performanceMode.warmupTicks}
+          cooldownTicks={performanceMode.cooldownTicks}
+          d3AlphaDecay={performanceMode.alphaDecay}
           onEngineStop={handleEngineStop}
           onNodeHover={handleNodeHover}
           onNodeClick={(node) => {
-            if (node.id != null) focusNode(String(node.id));
+            if ((node as GraphNode).isFolderGroup) {
+              toggleFolderExpansion((node as GraphNode).folder);
+            } else if (node.id != null) focusNode(String(node.id));
             else clearFocus();
           }}
           onBackgroundClick={clearFocus}

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import { createApp } from "../app.js";
-import { buildReverseIndex } from "../services/blast.js";
-import { storeAnalysis } from "../services/store.js";
+import { getAnalysis, storeAnalysis } from "../services/store.js";
 
 test("GET /api/blast returns importer depths and repository percentage", async () => {
   const id = `blast-api-${Date.now()}`;
@@ -20,7 +19,7 @@ test("GET /api/blast returns importer depths and repository percentage", async (
     dir: "/unused",
     url: "https://github.com/octocat/blast-api",
     graph: { nodes, edges },
-    analysis: { reverseIndex: buildReverseIndex(edges) },
+    analysis: { files: {} },
   });
 
   await withServer(async (baseUrl) => {
@@ -43,6 +42,7 @@ test("GET /api/blast returns importer depths and repository percentage", async (
       percentOfRepo: 50,
     });
     assert.ok(nodes.every((node) => Object.hasOwn(node, "blastRadius")));
+    assert.ok(getAnalysis(id).analysis.reverseIndex instanceof Map);
   });
 });
 
@@ -50,11 +50,14 @@ test("GET /api/blast reports unknown ids and missing or unknown paths", async ()
   await withServer(async (baseUrl) => {
     const unknownId = await fetch(`${baseUrl}/api/blast?id=missing&path=a.js`);
     assert.equal(unknownId.status, 404);
-    assert.equal((await unknownId.json()).error, "Unknown repository id");
+    assert.deepEqual((await unknownId.json()).error, {
+      code: "UNKNOWN_ID",
+      message: "Unknown repository id",
+    });
 
     const missingPath = await fetch(`${baseUrl}/api/blast?id=missing`);
     assert.equal(missingPath.status, 400);
-    assert.equal((await missingPath.json()).error, "The 'path' query parameter is required");
+    assert.equal((await missingPath.json()).error.message, "The 'path' query parameter is required");
 
     const id = `blast-api-path-${Date.now()}`;
     storeAnalysis({
@@ -68,7 +71,7 @@ test("GET /api/blast reports unknown ids and missing or unknown paths", async ()
       `${baseUrl}/api/blast?id=${id}&path=unknown.js`,
     );
     assert.equal(unknownPath.status, 404);
-    assert.equal((await unknownPath.json()).error, "Path is not a graph node");
+    assert.equal((await unknownPath.json()).error.message, "Path is not a graph node");
   });
 });
 

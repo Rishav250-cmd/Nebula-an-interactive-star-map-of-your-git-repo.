@@ -65,7 +65,7 @@ test("getChurn returns an empty Map for a directory without a Git repository", a
   }
 });
 
-test("getChurn returns an empty Map for a shallow repository", async () => {
+test("getChurn fetches only recent history for a shallow repository", async () => {
   const source = await mkdtemp(path.join(os.tmpdir(), "nebula-churn-source-"));
   const cloneRoot = await mkdtemp(
     path.join(os.tmpdir(), "nebula-churn-shallow-"),
@@ -97,7 +97,10 @@ test("getChurn returns an empty Map for a shallow repository", async () => {
       ).trim(),
       "true",
     );
-    assert.deepEqual(await getChurn(shallowClone), new Map());
+    assert.deepEqual(
+      sortedEntries(await getChurn(shallowClone)),
+      [["src/index.js", 2]],
+    );
   } finally {
     await rm(source, { recursive: true, force: true });
     await rm(cloneRoot, { recursive: true, force: true });

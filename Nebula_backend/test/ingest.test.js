@@ -68,6 +68,20 @@ test("listFiles returns relative POSIX paths and skips generated and binary file
   }
 });
 
+test("listFiles skips files over its configured size limit and reports the count", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nebula-file-size-limit-"));
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "small.js"), "export {};\n");
+    await writeFile(path.join(root, "src", "large.js"), "x".repeat(101));
+    const files = await listFiles(root, { maxFileBytes: 100 });
+    assert.deepEqual(files, ["src/small.js"]);
+    assert.equal(files.skippedOversize, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("cloneRepo rejects an empty repository and removes its destination", async () => {
   const source = await mkdtemp(path.join(os.tmpdir(), "nebula-empty-source-"));
   const repoDir = await mkdtemp(path.join(os.tmpdir(), "nebula-empty-clone-"));

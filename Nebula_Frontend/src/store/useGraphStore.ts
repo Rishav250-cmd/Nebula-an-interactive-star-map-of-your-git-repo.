@@ -1,11 +1,25 @@
 import { create } from 'zustand';
-import { analyzeRepo, clearCallGraphCache, fetchCallGraph, fetchGraph } from '../api/client';
+import {
+  analyzeRepo,
+  ApiError,
+  errorForDisplay,
+  fetchCallGraph,
+  fetchGraph,
+  getCachedRepositoryGraph,
+  rememberRepositoryGraph,
+  streamAnalysisProgress,
+  fetchHealth,
+  fetchOnboarding,
+  type AnalysisProgress,
+} from '../api/client';
 import { EMPTY_FILTERS, type GraphFilters } from '../lib/applyFilters';
 import type { CallGraph, GraphData, GraphWarning, HealthReport } from '../types/graph';
 
 export type GraphStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type AnalysisPhase = 'idle' | 'cloning' | 'parsing' | 'ready' | 'error';
 export type CallGraphStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type AnalysisProgressView = { stage: string; percent: number };
+export type HealthLoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type EdgeToggleKind = 'imports' | 'calls' | 'cycles';
 export type ViewMode = 'file' | 'function' | 'heatmap';
 const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
@@ -15,6 +29,8 @@ type GraphStore = {
   repoUrl: string;
   graph: GraphData | null;
   healthReport: HealthReport | null;
+  healthStatus: HealthLoadStatus;
+  healthError: string | null;
   repoId: string | null;
   analysisId: string | null;
   status: GraphStatus;
@@ -23,7 +39,7 @@ type GraphStore = {
   warnings: GraphWarning[];
   lastUrl: string | null;
   error: string | null;
-  progressMessage: string | null;
+  analysisProgress: AnalysisProgressView | null;
   selectedId: string | null;
   hoveredId: string | null;
   focusRequest: number;
@@ -40,9 +56,9 @@ type GraphStore = {
   setRepoUrl: (url: string) => void;
   setGraph: (graph: GraphData | null) => void;
   setHealthReport: (report: HealthReport | null) => void;
+  loadHealthReport: (signal?: AbortSignal) => Promise<void>;
   setAnalysisId: (id: string | null) => void;
   setStatus: (status: GraphStatus, error?: string | null) => void;
-  setProgressMessage: (message: string | null) => void;
   selectNode: (id: string | null) => void;
   hoverNode: (id: string | null) => void;
   focusNode: (id: string) => void;
@@ -68,6 +84,8 @@ function toggled(list: string[], value: string): string[] {
 export const useGraphStore = create<GraphStore>()((set, get) => {
   let requestCounter = 0;
   let callGraphRequestCounter = 0;
+  let healthRequestCounter = 0;
+  let activeAnalysisController: AbortController | null = null;
 
   const cancelCallGraphRequest = () => {
     callGraphRequestCounter += 1;
@@ -80,10 +98,12 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
 
   const resetAnalysisView = () => {
     cancelCallGraphRequest();
-    clearCallGraphCache();
+    healthRequestCounter += 1;
     set({
       viewMode: 'file',
       healthReport: null,
+      healthStatus: 'idle',
+      healthError: null,
       callGraph: null,
       callGraphStatus: 'idle',
       callGraphError: null,
@@ -98,6 +118,8 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     repoUrl: '',
     graph: null,
     healthReport: null,
+    healthStatus: 'idle',
+    healthError: null,
     repoId: null,
     analysisId: null,
     status: 'idle',
@@ -106,7 +128,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     warnings: [],
     lastUrl: null,
     error: null,
-    progressMessage: null,
+    analysisProgress: null,
     selectedId: null,
     hoveredId: null,
     focusRequest: 0,
@@ -123,7 +145,25 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
 
     setRepoUrl: (repoUrl) => set({ repoUrl }),
     setGraph: (graph) => set({ graph }),
-    setHealthReport: (healthReport) => set({ healthReport }),
+    setHealthReport: (healthReport) => set({
+      healthReport,
+      healthStatus: healthReport ? 'ready' : 'idle',
+      healthError: null,
+    }),
+    loadHealthReport: async (signal) => {
+      const analysisId = get().analysisId;
+      const requestId = ++healthRequestCounter;
+      if (!analysisId) return;
+      set({ healthStatus: 'loading', healthError: null });
+      try {
+        const healthReport = await fetchHealth(analysisId, signal);
+        if (requestId !== healthRequestCounter || get().analysisId !== analysisId) return;
+        set({ healthReport, healthStatus: 'ready', healthError: null });
+      } catch (error: unknown) {
+        if (signal?.aborted || requestId !== healthRequestCounter || get().analysisId !== analysisId) return;
+        set({ healthReport: null, healthStatus: 'error', healthError: errorForDisplay(error) });
+      }
+    },
     setAnalysisId: (analysisId) => set({ analysisId, repoId: analysisId }),
     setStatus: (status, error) => set((state) => {
       const phase: AnalysisPhase = status === 'loading'
@@ -136,7 +176,6 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
         phaseStartedAt: state.phase === phase ? state.phaseStartedAt : Date.now(),
       };
     }),
-    setProgressMessage: (progressMessage) => set({ progressMessage }),
     selectNode: (selectedId) => {
       const previousId = get().selectedId;
       set((state) => ({
@@ -209,9 +248,7 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
         set({
           callGraph: null,
           callGraphStatus: 'error',
-          callGraphError: callGraphError instanceof Error
-            ? callGraphError.message
-            : 'Could not load this file\'s function graph.',
+          callGraphError: errorForDisplay(callGraphError),
         });
       }
     },
@@ -262,6 +299,8 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
     resetFilters: () => set({ filters: EMPTY_FILTERS }),
     analyze: async (url) => {
       const currentRequest = ++requestCounter;
+      activeAnalysisController?.abort();
+      activeAnalysisController = null;
       const submittedUrl = url.trim();
       const startedAt = Date.now();
 
@@ -280,42 +319,63 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
           phaseStartedAt: startedAt,
           status: 'error',
           error: INVALID_URL_MESSAGE,
-          progressMessage: null,
+          analysisProgress: null,
         });
         return;
       }
 
+      const cachedRepository = getCachedRepositoryGraph(submittedUrl);
       resetAnalysisView();
       set({
         repoUrl: submittedUrl,
         lastUrl: submittedUrl,
-        graph: null,
-        repoId: null,
-        analysisId: null,
-        warnings: [],
+        graph: cachedRepository?.graph ?? null,
+        repoId: cachedRepository?.id ?? null,
+        analysisId: cachedRepository?.id ?? null,
+        warnings: cachedRepository?.graph.warnings ?? [],
         selectedId: null,
         hoveredId: null,
-        phase: 'cloning',
+        phase: cachedRepository ? 'ready' : 'cloning',
         phaseStartedAt: startedAt,
-        status: 'loading',
+        status: cachedRepository ? 'ready' : 'loading',
         error: null,
-        progressMessage: 'Cloning repository…',
+        analysisProgress: cachedRepository ? null : { stage: 'Starting analysis', percent: 0 },
       });
+      if (cachedRepository) return;
+
+      const controller = new AbortController();
+      activeAnalysisController = controller;
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 185_000);
 
       try {
-        const analysis = await analyzeRepo(submittedUrl);
+        const analysis = await analyzeRepo(submittedUrl, controller.signal);
+        if (currentRequest !== requestCounter) return;
+
+        if (analysis.status !== 'ready') {
+          await streamAnalysisProgress(analysis.id, (progress) => {
+            if (currentRequest !== requestCounter) return;
+            const nextPhase = progress.status === 'parsing' ? 'parsing' : 'cloning';
+            set((state) => ({
+              phase: nextPhase,
+              phaseStartedAt: state.phase === nextPhase ? state.phaseStartedAt : Date.now(),
+              analysisProgress: progressView(progress),
+            }));
+          }, controller.signal);
+        }
         if (currentRequest !== requestCounter) return;
 
         set({
           phase: 'parsing',
-          phaseStartedAt: Date.now(),
-          status: 'loading',
-          error: null,
-          progressMessage: 'Building dependency graph…',
+          analysisProgress: { stage: 'Loading graph', percent: 96 },
         });
 
-        const graph = await fetchGraph(analysis.id);
+        const graph = await fetchGraph(analysis.id, controller.signal);
         if (currentRequest !== requestCounter) return;
+        rememberRepositoryGraph(submittedUrl, analysis.id, graph);
 
         resetAnalysisView();
         set({
@@ -329,10 +389,14 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
           phaseStartedAt: Date.now(),
           status: 'ready',
           error: null,
-          progressMessage: null,
+          analysisProgress: null,
         });
+        void fetchOnboarding(analysis.id, controller.signal).catch(() => {});
       } catch (analysisError: unknown) {
         if (currentRequest !== requestCounter) return;
+        const safeError = timedOut
+          ? new ApiError('ANALYSIS_TIMEOUT', 'Analysis timed out. Try again or use a smaller repository.')
+          : analysisError;
         set({
           graph: null,
           repoId: null,
@@ -341,10 +405,33 @@ export const useGraphStore = create<GraphStore>()((set, get) => {
           phase: 'error',
           phaseStartedAt: Date.now(),
           status: 'error',
-          error: analysisError instanceof Error ? analysisError.message : 'Could not analyze this repository.',
-          progressMessage: null,
+          error: errorForDisplay(safeError),
+          analysisProgress: null,
         });
+      } finally {
+        window.clearTimeout(timeoutId);
+        if (activeAnalysisController === controller) activeAnalysisController = null;
       }
     },
   };
 });
+
+function progressView(progress: AnalysisProgress): AnalysisProgressView {
+  const { status, progress: counts } = progress;
+  if (status === 'parsing' && counts.total > 0) {
+    return {
+      stage: 'Parsing files',
+      percent: Math.min(92, 15 + Math.floor((counts.done / counts.total) * 77)),
+    };
+  }
+  const stages: Record<AnalysisProgress['status'], AnalysisProgressView> = {
+    queued: { stage: 'Queued', percent: 1 },
+    cloning: { stage: 'Cloning repository', percent: 5 },
+    listing: { stage: 'Walking files', percent: 12 },
+    parsing: { stage: 'Parsing files', percent: 15 },
+    graph: { stage: 'Preparing graph', percent: 94 },
+    ready: { stage: 'Loading graph', percent: 96 },
+    error: { stage: 'Analysis failed', percent: 0 },
+  };
+  return stages[status];
+}

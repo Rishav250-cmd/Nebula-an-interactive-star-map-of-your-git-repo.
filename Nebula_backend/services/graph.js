@@ -2,12 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import { getChurn } from "./churn.js";
-import { buildReverseIndex, computeBlast } from "./blast.js";
 import { findCycles } from "./cycles.js";
 import { parseFile } from "./parser.js";
 import { loadAliases, resolveImport } from "./resolver.js";
 import { config } from "./config.js";
 import { NebulaError } from "./errors.js";
+import { elapsedMs, logTiming, startTimer } from "./timing.js";
+import { createParserPool } from "./parserPool.js";
 
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
 const TIER_TWO_NAMES = new Set([
@@ -29,6 +30,8 @@ export async function buildGraph({
   parseFileImpl = parseFile,
   getChurnImpl = getChurn,
   onProgress,
+  onTiming,
+  deferChurn = false,
 }) {
   const startedAt = Date.now();
   const snapshot = await getHistory(dir, repoUrl, id);
@@ -47,7 +50,7 @@ export async function buildGraph({
     });
   }
 
-  const skipped = { large: 0, generated: 0, binary: 0 };
+  const skipped = { large: Number(files?.skippedOversize) || 0, generated: 0, binary: 0 };
   const warnings = [];
   const sizedFiles = [];
   for (const file of sortedCodeFiles) {
@@ -86,63 +89,106 @@ export async function buildGraph({
 
   onProgress?.({ status: "parsing", progress: { done: 0, total: selectedFiles.length } });
 
-  const churnMap = await getChurnImpl(dir);
+  const churnStartedAt = startTimer();
+  const churnMap = deferChurn ? new Map() : await getChurnImpl(dir);
+  if (!deferChurn) reportTiming("churn", elapsedMs(churnStartedAt));
   const aliases = await loadAliases(dir);
   const parsedFiles = [];
   const analysis = { files: {}, aliases, churn: churnMap };
   let processedCount = 0;
   let memoryLimited = false;
+  const parserPool = createParserPool({
+    workerCount: parseFileImpl === parseFile
+      ? Math.min(config.PARSER_WORKERS, selectedFiles.length)
+      : 0,
+    parseImpl: parseFileImpl,
+  });
+  const parseRssLimitBytes = config.MAX_RSS_MB * 1024 * 1024;
+  const parseHeapLimitBytes = config.MAX_HEAP_MB * 1024 * 1024;
 
-  for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
-    const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map((file) => readAndParseFile(dir, file, parseFileImpl)),
-    );
+  const parseStartedAt = startTimer();
+  try {
+    for (let offset = 0; offset < selectedFiles.length; offset += config.PARSE_BATCH_SIZE) {
+      const batch = selectedFiles.slice(offset, offset + config.PARSE_BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map((file) => readAndParseFile(dir, file, parserPool)),
+      );
 
-    for (const result of results) {
-      processedCount += 1;
-      if (result.skip === "large") {
-        skipped.large += 1;
-        warnings.push({ file: result.path, message: "Skipped file larger than 1 MB." });
-        continue;
+      for (const result of results) {
+        processedCount += 1;
+        if (result.skip === "large") {
+          skipped.large += 1;
+          warnings.push({ file: result.path, message: "Skipped file larger than 1 MB." });
+          continue;
+        }
+        if (result.skip === "generated") {
+          skipped.generated += 1;
+          continue;
+        }
+        if (result.skip === "binary") {
+          skipped.binary += 1;
+          continue;
+        }
+        if (result.error) {
+          warnings.push({ file: result.path, message: result.error });
+          console.warn(`Skipping file that failed to parse: ${result.path}`);
+          const skippedParse = {
+            ...result,
+            imports: [],
+            bindings: new Map(),
+            functions: [],
+            calls: [],
+            complexity: 0,
+          };
+          analysis.files[result.path] = {
+            functions: [],
+            calls: [],
+            bindings: skippedParse.bindings,
+            complexity: 0,
+          };
+          parsedFiles.push(skippedParse);
+          continue;
+        }
+        analysis.files[result.path] = {
+          functions: result.functions,
+          calls: result.calls,
+          bindings: result.bindings,
+          complexity: result.complexity,
+        };
+        parsedFiles.push(result);
       }
-      if (result.skip === "generated") {
-        skipped.generated += 1;
-        continue;
+      onProgress?.({
+        status: "parsing",
+        progress: { done: processedCount, total: selectedFiles.length },
+      });
+
+      if (
+        processedCount < selectedFiles.length
+        && (process.memoryUsage().rss > parseRssLimitBytes
+          || process.memoryUsage().heapUsed > parseHeapLimitBytes)
+      ) {
+        memoryLimited = true;
+        break;
       }
-      if (result.skip === "binary") {
-        skipped.binary += 1;
-        continue;
-      }
-      if (result.error) warnings.push({ file: result.path, message: result.error });
-      analysis.files[result.path] = {
-        functions: result.functions,
-        calls: result.calls,
-        bindings: result.bindings,
-        complexity: result.complexity,
-      };
-      parsedFiles.push(result);
     }
-    onProgress?.({
-      status: "parsing",
-      progress: { done: processedCount, total: selectedFiles.length },
-    });
-
-    if (
-      processedCount < selectedFiles.length
-      && process.memoryUsage().rss > config.MAX_RSS_MB * 1024 * 1024
-    ) {
-      memoryLimited = true;
-      break;
-    }
+  } finally {
+    await parserPool.close();
   }
+  reportTiming("parse", elapsedMs(parseStartedAt), { files: processedCount });
 
-  if (memoryLimited) truncatedReason = "memory";
+  if (memoryLimited) {
+    truncatedReason = "memory";
+    warnings.push({
+      file: null,
+      message: "Analysis stopped early to stay within the server memory limit.",
+    });
+  }
   onProgress?.({
     status: "graph",
     progress: { done: processedCount, total: selectedFiles.length },
   });
 
+  const complexityStartedAt = startTimer();
   const nodes = parsedFiles.map(({ path: filePath, source }) => ({
     id: filePath,
     folder: filePath.includes("/") ? filePath.split("/")[0] : ".",
@@ -158,12 +204,15 @@ export async function buildGraph({
     inCycle: false,
     fanIn: 0,
     fanOut: 0,
+    blastRadius: null,
   }));
+  reportTiming("complexity", elapsedMs(complexityStartedAt), { files: nodes.length });
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const nodeIds = new Set(nodesById.keys());
   const edgeKeys = new Set();
   const edges = [];
 
+  const importsStartedAt = startTimer();
   for (const { path: sourcePath, imports } of parsedFiles) {
     for (const { specifier } of imports) {
       const targetPath = resolveImport(specifier, sourcePath, nodeIds, { aliases });
@@ -178,6 +227,8 @@ export async function buildGraph({
   edges.sort(
     (left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target),
   );
+  reportTiming("import resolution", elapsedMs(importsStartedAt), { edges: edges.length });
+  const cyclesStartedAt = startTimer();
   const cycles = findCycles(nodes, edges);
   const cycleByFile = new Map();
   cycles.forEach((cycle, cycleIndex) => {
@@ -193,15 +244,7 @@ export async function buildGraph({
     nodesById.get(edge.source).fanOut += 1;
     nodesById.get(edge.target).fanIn += 1;
   }
-
-  const reverseIndex = buildReverseIndex(edges);
-  for (const node of nodes) {
-    node.blastRadius = computeBlast(reverseIndex, node.id, {
-      maxDepth: 4,
-      cap: Number.POSITIVE_INFINITY,
-    }).count;
-  }
-  analysis.reverseIndex = reverseIndex;
+  reportTiming("cycles", elapsedMs(cyclesStartedAt), { cycles: cycles.length });
 
   const parsedPaths = new Set(parsedFiles.map(({ path: filePath }) => filePath));
   const excludedTests = sortedCodeFiles.filter(
@@ -221,6 +264,11 @@ export async function buildGraph({
     stale: false,
     analysisMs: Date.now() - startedAt,
   };
+
+  function reportTiming(stage, durationMs, extra) {
+    if (onTiming) onTiming(stage, durationMs, extra);
+    else logTiming(id, stage, durationMs, extra);
+  }
 
   return {
     graph: { repo: repoUrl, sha: snapshot.sha, nodes, edges, cycles, warnings, meta },
@@ -251,27 +299,31 @@ async function getHistory(dir, repoUrl, id) {
   }
 }
 
-async function readAndParseFile(dir, filePath, parseFileImpl) {
-  const diskPath = path.join(dir, ...filePath.split("/"));
-  const metadata = await stat(diskPath);
-  if (metadata.size > config.MAX_FILE_BYTES) return { path: filePath, skip: "large" };
+async function readAndParseFile(dir, filePath, parserPool) {
+  try {
+    const diskPath = path.join(dir, ...filePath.split("/"));
+    const metadata = await stat(diskPath);
+    if (metadata.size > config.MAX_FILE_BYTES) return { path: filePath, skip: "large" };
 
-  const buffer = await readFile(diskPath);
-  if (buffer.subarray(0, 1000).includes(0)) return { path: filePath, skip: "binary" };
-  const source = buffer.toString("utf8").replace(/^\uFEFF/, "");
-  if (isGeneratedSource(source)) return { path: filePath, skip: "generated" };
+    const buffer = await readFile(diskPath);
+    if (buffer.subarray(0, 1000).includes(0)) return { path: filePath, skip: "binary" };
+    const source = buffer.toString("utf8").replace(/^\uFEFF/, "");
+    if (isGeneratedSource(source)) return { path: filePath, skip: "generated" };
 
-  const parsed = parseFileImpl(source, filePath);
-  return {
-    path: filePath,
-    source,
-    imports: parsed.imports,
-    bindings: parsed.bindings,
-    functions: parsed.functions,
-    calls: parsed.calls,
-    complexity: parsed.complexity,
-    error: parsed.error,
-  };
+    const parsed = await parserPool.parse(source, filePath);
+    return {
+      path: filePath,
+      source,
+      imports: parsed.imports,
+      bindings: parsed.bindings,
+      functions: parsed.functions,
+      calls: parsed.calls,
+      complexity: parsed.complexity,
+      error: parsed.error,
+    };
+  } catch (error) {
+    return { path: filePath, error: error?.message ?? "Could not parse file" };
+  }
 }
 
 function isGeneratedSource(source) {
@@ -290,6 +342,7 @@ function tierFor(filePath) {
   if (TIER_TWO_NAMES.has(stem)) return 2;
   if (stem.split(/[._-]+/).some((part) => TIER_TWO_NAMES.has(part))) return 2;
   if (/\.(?:test|spec|example|benchmark|fixture|stories|mock|e2e|cypress)\./i.test(fileName)) return 2;
+  if (segments.some((segment) => ["src", "lib", "app"].includes(segment))) return 0;
   return 1;
 }
 

@@ -9,6 +9,7 @@ import test from "node:test";
 import { getAnalysis, storeAnalysis } from "../services/store.js";
 import { createApp } from "../app.js";
 import { buildGraph } from "../services/graph.js";
+import { buildCallGraph } from "../services/callgraph.js";
 
 test("POST /api/analyze stores a clone graph and GET /api/graph/:id returns it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nebula-api-test-"));
@@ -118,7 +119,10 @@ test("POST /api/analyze rejects invalid GitHub URLs", async () => {
     });
 
     assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, "Invalid GitHub URL");
+    assert.deepEqual((await response.json()).error, {
+      code: "INVALID_URL",
+      message: "Invalid GitHub URL",
+    });
   });
 });
 
@@ -138,7 +142,10 @@ test("POST /api/analyze returns an error when cloning fails", async () => {
     });
 
     assert.equal(response.status, 502);
-    assert.equal((await response.json()).error, "Could not clone repo (private or not found?)");
+    assert.deepEqual((await response.json()).error, {
+      code: "CLONE_FAILED",
+      message: "Could not clone repo (private or not found?)",
+    });
   });
 });
 
@@ -149,7 +156,10 @@ test("GET /api/graph/:id returns 404 when the analysis is unknown", async () => 
     const response = await fetch(`${baseUrl}/api/graph/missing-analysis`);
 
     assert.equal(response.status, 404);
-    assert.equal((await response.json()).error, "Unknown repository id");
+    assert.deepEqual((await response.json()).error, {
+      code: "UNKNOWN_ID",
+      message: "Unknown repository id",
+    });
   });
 });
 
@@ -182,7 +192,14 @@ test("GET /api/callgraph validates requests and returns call graph; graph includ
       analysis: built.analysis,
     });
 
-    await withServer(createApp(), async (baseUrl) => {
+    let callGraphBuilds = 0;
+    const app = createApp({
+      buildCallGraphImpl: (...args) => {
+        callGraphBuilds += 1;
+        return buildCallGraph(...args);
+      },
+    });
+    await withServer(app, async (baseUrl) => {
       const success = await fetch(
         `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js`,
       );
@@ -204,6 +221,11 @@ test("GET /api/callgraph validates requests and returns call graph; graph includ
           type: "call",
         },
       ]);
+      const repeated = await fetch(
+        `${baseUrl}/api/callgraph?id=callgraph-api-fixture&path=src/main.js`,
+      );
+      assert.deepEqual(await repeated.json(), callGraph);
+      assert.equal(callGraphBuilds, 1);
 
       const missingPath = await fetch(
         `${baseUrl}/api/callgraph?id=callgraph-api-fixture`,
@@ -269,7 +291,9 @@ test("POST /api/graph uses the shared clone/build pipeline and includes the id",
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ...graph, id: "direct-graph" });
-    assert.deepEqual(buildArguments, {
+    const { onProgress, ...argumentsWithoutProgress } = buildArguments;
+    assert.equal(typeof onProgress, "function");
+    assert.deepEqual(argumentsWithoutProgress, {
       id: "direct-graph",
       dir: "/fixture/repo",
       files: ["src/index.ts"],
@@ -369,7 +393,7 @@ test("POST /api/upload rejects a ZIP-slip entry", async () => {
   await withServer(app, async (baseUrl) => {
     const response = await uploadZip(baseUrl, "unsafe.zip", zip.toBuffer());
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /escapes its target folder/);
+    assert.match((await response.json()).error.message, /escapes its target folder/);
   });
 });
 
@@ -382,7 +406,7 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
       body: new FormData(),
     });
     assert.equal(missing.status, 400);
-    assert.match((await missing.json()).error, /ZIP file is required/);
+    assert.match((await missing.json()).error.message, /ZIP file is required/);
 
     const nonZip = await uploadZip(
       baseUrl,
@@ -390,7 +414,7 @@ test("POST /api/upload rejects a missing file and a non-ZIP filename", async () 
       Buffer.from("not a zip"),
     );
     assert.equal(nonZip.status, 400);
-    assert.equal((await nonZip.json()).error, "Only .zip files are accepted.");
+    assert.equal((await nonZip.json()).error.message, "Only .zip files are accepted.");
   });
 });
 

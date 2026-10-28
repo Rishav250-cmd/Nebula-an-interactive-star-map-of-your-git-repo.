@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent,
@@ -10,10 +10,11 @@ import { fetchMockGraph } from './api/client';
 import { generateMockGraph } from './data/generateMock';
 import { GraphCanvas } from './components/GraphCanvas';
 import { LeftPanel } from './components/LeftPanel';
-import { RightPanel } from './components/RightPanel';
 import { SplashScreen } from './components/SplashScreen';
 import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
+
+const RightPanel = lazy(() => import('./components/RightPanel').then((module) => ({ default: module.RightPanel })));
 
 
 export default function App() {
@@ -102,7 +103,13 @@ export default function App() {
             workspaceRef={workspaceRef}
             onChange={setRightPanelWidth}
           />
-          <RightPanel />
+          <Suspense fallback={(
+            <aside className="side-panel side-panel--right" aria-label="Code panel">
+              <p className="panel-placeholder" role="status">Loading code panel…</p>
+            </aside>
+          )}>
+            <RightPanel />
+          </Suspense>
         </div>
       </div>
       {showSplash && <SplashScreen onDone={handleSplashDone} />}

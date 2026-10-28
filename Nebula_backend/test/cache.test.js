@@ -124,6 +124,7 @@ test("analysis cache ignores corrupted files and version mismatches", async () =
 
 test("remote failure serves stale cache only when its clone folder exists", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "nebula-stale-clone-"));
+  await mkdir(dir, { recursive: true });
   const graph = { repo: REPO_URL, sha: SHA_ONE, nodes: [], edges: [], cycles: [], warnings: [], meta: { stale: false } };
   const analysis = { files: {} };
   const app = createApp({
@@ -156,7 +157,11 @@ test("remote failure serves stale cache only when its clone folder exists", asyn
         body: JSON.stringify({ url: REPO_URL }),
       });
       assert.equal(response.status, 502);
-      assert.equal((await response.json()).code, "CLONE_FAILED");
+      const payload = await response.json();
+      assert.deepEqual(Object.keys(payload), ["error"]);
+      assert.deepEqual(Object.keys(payload.error), ["code", "message"]);
+      assert.equal(payload.error.code, "CLONE_FAILED");
+      assert.equal(typeof payload.error.message, "string");
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -180,6 +185,10 @@ test("ping reports runtime shape and CORS limits response origins", async () => 
     assert.deepEqual(Object.keys(payload.limits), ["maxCodeFiles", "maxRepoMb", "maxConcurrentJobs"]);
     const denied = await fetch(`${baseUrl}/api/ping`, { headers: { Origin: "https://denied.example" } });
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
+    const compressed = await fetch(`${baseUrl}/api/mock-graph`, {
+      headers: { "accept-encoding": "gzip" },
+    });
+    assert.equal(compressed.headers.get("content-encoding"), "gzip");
   });
 });
 
@@ -219,6 +228,27 @@ test("analysis cache pruning keeps only the 30 newest JSON files", async () => {
     assert.equal(files.length, 30);
     assert.equal(files[0], "cache-02.json");
     assert.equal(files.at(-1), "cache-31.json");
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("analysis cache pruning evicts oldest repositories to fit the disk budget", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "nebula-cache-budget-"));
+  const now = Date.now();
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const filePath = path.join(cacheDir, `owner__repo-${index}__${SHA_ONE}.json`);
+      await writeFile(filePath, "x".repeat(10));
+      const modified = new Date(now + index * 1000);
+      await utimes(filePath, modified, modified);
+    }
+    await pruneAnalysisCache({ cacheDir, maxRepos: 10, maxDiskBytes: 20 });
+    const files = (await readdir(cacheDir)).sort();
+    assert.deepEqual(files, [
+      `owner__repo-1__${SHA_ONE}.json`,
+      `owner__repo-2__${SHA_ONE}.json`,
+    ]);
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
   }

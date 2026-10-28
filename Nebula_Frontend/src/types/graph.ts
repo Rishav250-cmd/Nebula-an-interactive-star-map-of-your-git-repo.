@@ -11,6 +11,9 @@ export type GraphNode = {
   fanIn: number;
   fanOut: number;
   functionCount?: number;
+  isFolderGroup?: boolean;
+  fileCount?: number;
+  memberIds?: string[];
 };
 
 export type GraphEdge = {
@@ -18,6 +21,7 @@ export type GraphEdge = {
   target: string;
   type: 'import' | 'call';
   inCycle?: boolean;
+  aggregateCount?: number;
 };
 
 export type CallGraphNode = {
@@ -56,7 +60,7 @@ export type GraphWarning = {
 
 export type AnalyzeResponse = {
   id: string;
-  status: 'ready';
+  status: 'ready' | 'queued' | 'cloning';
 };
 
 export type GraphData = {
@@ -66,6 +70,12 @@ export type GraphData = {
   edges: GraphEdge[];
   cycles: string[][];
   warnings: GraphWarning[];
+  meta?: {
+    analyzedFiles?: number;
+    totalCodeFiles?: number;
+    truncated?: boolean;
+    truncatedReason?: string | null;
+  };
 };
 
 export type HealthFile = {

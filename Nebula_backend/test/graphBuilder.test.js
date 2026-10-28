@@ -71,20 +71,8 @@ test("buildGraph returns code nodes, resolved import edges, metrics, and parse w
 
     assert.equal(graph.repo, "https://github.com/octocat/graph-fixture");
     assert.equal(graph.sha, (await git.revparse(["HEAD"])).trim());
-    assert.equal(
-      graph.nodes.find(({ id }) => id === "src/util.ts").blastRadius,
-      6,
-    );
-    assert.deepEqual(
-      analysis.reverseIndex.get("src/util.ts").sort(),
-      [
-        "src/barrel/index.ts",
-        "src/common.cjs",
-        "src/cycle-a.ts",
-        "src/lazy.js",
-        "src/main.ts",
-      ].sort(),
-    );
+    assert.equal(graph.nodes.find(({ id }) => id === "src/util.ts").blastRadius, null);
+    assert.equal(Object.hasOwn(analysis, "reverseIndex"), false);
     assert.deepEqual(
       graph.nodes.map(({ id }) => id),
       [

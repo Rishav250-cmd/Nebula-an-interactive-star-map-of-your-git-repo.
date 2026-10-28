@@ -43,6 +43,7 @@ function buildSteps(files: HealthFile[]): PathfinderStep[] {
 
 export function PathfinderPanel() {
   const healthReport = useGraphStore((state) => state.healthReport);
+  const healthStatus = useGraphStore((state) => state.healthStatus);
   const focusNode = useGraphStore((state) => state.focusNode);
   const steps = useMemo(() => buildSteps(healthReport?.files ?? []), [healthReport]);
 
@@ -53,7 +54,9 @@ export function PathfinderPanel() {
         <span>Start with these</span>
       </div>
       {!healthReport ? (
-        <p className="pathfinder-panel__empty" role="status">Waiting for repository health…</p>
+        <p className="pathfinder-panel__empty" role={healthStatus === 'error' ? 'alert' : 'status'}>
+          {healthStatus === 'error' ? 'Repository health could not be loaded.' : 'Loading repository health…'}
+        </p>
       ) : steps.length > 0 ? (
         <ol>
           {steps.map((step) => (
