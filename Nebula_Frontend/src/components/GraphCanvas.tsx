@@ -16,7 +16,6 @@ import { applyFilters } from '../lib/applyFilters';
 import type { GraphEdge, GraphNode } from '../types/graph';
 import { resolveEndpoints, type LinkEndpoints } from '../utils/graphEdges';
 import { buildAdjacency } from '../lib/graphHighlight';
-import { fetchHealth } from '../api/client';
 import { folderColor, folderLegend, nodeRadius } from '../lib/graphStyle';
 import {
   GRAPH_PERFORMANCE_THRESHOLDS,
@@ -111,8 +110,10 @@ export function GraphCanvas() {
   const analysisId = useGraphStore((state) => state.analysisId);
   const healthReport = useGraphStore((state) => state.healthReport);
   const setHealthReport = useGraphStore((state) => state.setHealthReport);
+  const loadHealthReport = useGraphStore((state) => state.loadHealthReport);
   const phase = useGraphStore((state) => state.phase);
   const phaseStartedAt = useGraphStore((state) => state.phaseStartedAt);
+  const analysisProgress = useGraphStore((state) => state.analysisProgress);
   const error = useGraphStore((state) => state.error);
   const lastUrl = useGraphStore((state) => state.lastUrl);
   const analyze = useGraphStore((state) => state.analyze);
@@ -154,14 +155,9 @@ export function GraphCanvas() {
       return undefined;
     }
     const controller = new AbortController();
-    fetchHealth(analysisId, controller.signal)
-      .then((report) => setHealthReport(report))
-      .catch(() => {
-        if (controller.signal.aborted) return;
-        setHealthReport(null);
-      });
+    void loadHealthReport(controller.signal);
     return () => controller.abort();
-  }, [analysisId, setHealthReport]);
+  }, [analysisId, loadHealthReport, setHealthReport]);
 
   // The graph without the files hidden in the filter panel (same object when no filter is active).
   const visibleGraph = useMemo(() => applyFilters(graph, filters), [graph, filters]);
@@ -886,7 +882,7 @@ export function GraphCanvas() {
         <p className="welcome-state">Paste a GitHub URL to map its code</p>
       )}
       {(phase === 'cloning' || phase === 'parsing') && (
-        <LoadingOverlay phase={phase} phaseStartedAt={phaseStartedAt} />
+        <LoadingOverlay phase={phase} phaseStartedAt={phaseStartedAt} progress={analysisProgress} />
       )}
       {phase === 'error' && (
         <ErrorState

@@ -60,7 +60,7 @@ export type GraphWarning = {
 
 export type AnalyzeResponse = {
   id: string;
-  status: 'ready';
+  status: 'ready' | 'queued' | 'cloning';
 };
 
 export type GraphData = {
