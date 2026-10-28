@@ -66,6 +66,12 @@ export type GraphData = {
   edges: GraphEdge[];
   cycles: string[][];
   warnings: GraphWarning[];
+  meta?: {
+    analyzedFiles?: number;
+    totalCodeFiles?: number;
+    truncated?: boolean;
+    truncatedReason?: string | null;
+  };
 };
 
 export type HealthFile = {

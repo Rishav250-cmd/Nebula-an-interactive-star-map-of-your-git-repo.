@@ -1008,6 +1008,22 @@
   box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
 }
 
+.large-repo-banner {
+  position: absolute;
+  z-index: 3;
+  top: 53px;
+  left: 12px;
+  max-width: min(460px, calc(100% - 24px));
+  padding: 6px 9px;
+  border: 1px solid rgb(196 181 253 / 22%);
+  border-radius: 7px;
+  color: #cbd5e1;
+  background: rgb(8 10 21 / 78%);
+  font-size: 10px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
 .edge-toggle-toolbar button {
   padding: 6px 8px;
   border: 0;
