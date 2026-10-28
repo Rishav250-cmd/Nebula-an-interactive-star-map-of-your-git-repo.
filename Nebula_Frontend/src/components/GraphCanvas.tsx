@@ -88,6 +88,32 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
+function drawDottedCircle(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  zoomScale: number,
+  color: string,
+): void {
+  const circumferenceInPixels = Math.PI * 2 * radius * zoomScale;
+  const dotCount = Math.max(12, Math.min(720, Math.ceil(circumferenceInPixels / 8)));
+  const dotRadius = 1.35 / zoomScale;
+  context.fillStyle = color;
+  for (let index = 0; index < dotCount; index += 1) {
+    const angle = (index / dotCount) * Math.PI * 2;
+    context.beginPath();
+    context.arc(
+      x + Math.cos(angle) * radius,
+      y + Math.sin(angle) * radius,
+      dotRadius,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  }
+}
+
 function healthColor(score: number | null): string {
   if (score === null) return '#94a3b8';
   if (score >= 75) return '#34d399';
@@ -439,13 +465,14 @@ export function GraphCanvas() {
       for (let distance = 1; distance <= 4; distance += 1) {
         if (blastCounts[distance] === 0) continue;
         const ringRadius = radius + (distance * 27) / zoomScale;
-        context.beginPath();
-        context.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
-        context.strokeStyle = withAlpha(distance === 1 ? '#5eead4' : distance === 2 ? '#fbbf24' : '#fb7185', 0.42);
-        context.lineWidth = 1 / zoomScale;
-        context.setLineDash([3 / zoomScale, 4 / zoomScale]);
-        context.stroke();
-        context.setLineDash([]);
+        drawDottedCircle(
+          context,
+          node.x,
+          node.y,
+          ringRadius,
+          zoomScale,
+          withAlpha(distance === 1 ? '#5eead4' : distance === 2 ? '#fbbf24' : '#fb7185', 0.72),
+        );
         context.font = `${8 / zoomScale}px Inter, ui-sans-serif, sans-serif`;
         context.textAlign = 'left';
         context.textBaseline = 'middle';
@@ -454,13 +481,14 @@ export function GraphCanvas() {
       }
       const progress = ((performance.now() % 1700) / 1700);
       const rippleRadius = radius + (progress * 78) / zoomScale;
-      context.beginPath();
-      context.arc(node.x, node.y, rippleRadius, 0, Math.PI * 2);
-      context.strokeStyle = withAlpha('#c4b5fd', 0.52 * (1 - progress));
-      context.lineWidth = 2 / zoomScale;
-      context.setLineDash([2 / zoomScale, 4 / zoomScale]);
-      context.stroke();
-      context.setLineDash([]);
+      drawDottedCircle(
+        context,
+        node.x,
+        node.y,
+        rippleRadius,
+        zoomScale,
+        withAlpha('#c4b5fd', 0.72 * (1 - progress)),
+      );
     }
 
     context.beginPath();
