@@ -10,6 +10,7 @@ import {
   listFiles,
 } from "../services/ingest.js";
 import { buildCallGraph } from "../services/callgraph.js";
+import { computeBlast } from "../services/blast.js";
 import { loadAnalysisCache, saveAnalysisCache } from "../services/cache.js";
 import { getHeadSha, getRemoteHeadSha } from "../services/git.js";
 import {
@@ -167,6 +168,50 @@ export function createAnalyzeRouter({
         },
       );
       return response.status(200).json(callGraph);
+    } catch (error) {
+      return sendPipelineError(response, error);
+    }
+  });
+
+  router.get("/blast", async (request, response) => {
+    const { id, path: filePath, depth: rawDepth } = request.query;
+    if (typeof filePath !== "string" || filePath === "")
+      return response
+        .status(400)
+        .json({ error: "The 'path' query parameter is required" });
+    if (typeof id !== "string" || id === "")
+      return response
+        .status(400)
+        .json({ error: "The 'id' query parameter is required" });
+    if (
+      rawDepth !== undefined &&
+      (typeof rawDepth !== "string" || !/^[1-6]$/.test(rawDepth))
+    ) {
+      return response.status(400).json({ error: "Depth must be an integer from 1 to 6" });
+    }
+
+    const analysis = getAnalysisImpl(id);
+    if (!analysis)
+      return response.status(404).json({ error: "Unknown repository id" });
+
+    try {
+      await ensureGraphAnalysis(analysis);
+      const nodes = analysis.graph?.nodes ?? [];
+      if (!nodes.some((node) => node.id === filePath))
+        return response.status(404).json({ error: "Path is not a graph node" });
+
+      const blast = computeBlast(analysis.analysis?.reverseIndex, filePath, {
+        maxDepth: rawDepth === undefined ? 4 : Number(rawDepth),
+      });
+      const totalFiles = nodes.length;
+      return response.status(200).json({
+        ...blast,
+        totalFiles,
+        percentOfRepo:
+          totalFiles === 0
+            ? 0
+            : Math.round((blast.count / totalFiles) * 1000) / 10,
+      });
     } catch (error) {
       return sendPipelineError(response, error);
     }
