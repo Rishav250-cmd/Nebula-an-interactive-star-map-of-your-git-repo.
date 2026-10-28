@@ -7,6 +7,7 @@ import { CyclesPanel } from './CyclesPanel';
 import { FilterPanel } from './FilterPanel';
 import { RepositoryHealthCard } from './RepositoryHealthCard';
 import { PathfinderPanel } from './PathfinderPanel';
+import { RepositoryQA } from './RepositoryQA';
 
 export function LeftPanel() {
   const graph = useGraphStore((state) => state.graph);
@@ -26,6 +27,7 @@ export function LeftPanel() {
     <aside className="side-panel side-panel--left" aria-labelledby="explore-title">
       <h2 className="panel-title" id="explore-title">Explore</h2>
       <RepositoryHealthCard />
+      <RepositoryQA />
       {graph && <PathfinderPanel />}
       <SearchBar />
       <FilterPanel />

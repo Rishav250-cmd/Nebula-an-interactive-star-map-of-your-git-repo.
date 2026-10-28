@@ -31,8 +31,6 @@ import { createJobLimiter } from "../services/limiter.js";
 import { elapsedMs, logTiming, startTimer, timingEnabled } from "../services/timing.js";
 import { getChurn } from "../services/churn.js";
 
-const githubRepositoryUrl =
-  /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?$/;
 const uploadZip = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.MAX_UPLOAD_MB * 1024 * 1024, files: 1, fields: 0 },
@@ -72,8 +70,9 @@ export function createAnalyzeRouter({
   const perFileResultCache = new WeakMap();
 
   router.post("/analyze", async (request, response) => {
-    const { url, async: asyncMode } = request.body ?? {};
-    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
+    const { async: asyncMode } = request.body ?? {};
+    const url = normalizeRepositoryUrl(request.body?.url);
+    if (!url) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     if (asyncMode === true) {
       const id = repoIdFor(url);
@@ -317,8 +316,8 @@ export function createAnalyzeRouter({
   }
 
   router.post("/graph", async (request, response) => {
-    const { url } = request.body ?? {};
-    if (!isValidRepositoryUrl(url)) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
+    const url = normalizeRepositoryUrl(request.body?.url);
+    if (!url) throw new NebulaError("INVALID_URL", { message: "Invalid GitHub URL" });
 
     try {
       const id = repoIdFor(url);
@@ -816,8 +815,32 @@ function runZipUpload(request, response, next) {
   });
 }
 
-function isValidRepositoryUrl(url) {
-  return typeof url === "string" && githubRepositoryUrl.test(url);
+function normalizeRepositoryUrl(value) {
+  if (typeof value !== "string") return null;
+
+  try {
+    const parsedUrl = new URL(value.trim());
+    if (
+      parsedUrl.protocol !== "https:" ||
+      parsedUrl.hostname !== "github.com" ||
+      parsedUrl.username ||
+      parsedUrl.password
+    ) return null;
+
+    const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
+    if (pathParts.length < 2) return null;
+
+    const [owner, rawRepository] = pathParts;
+    const repository = rawRepository.replace(/\.git$/i, "");
+    const validSegment = /^[A-Za-z0-9_.-]+$/;
+    if (!validSegment.test(owner) || !validSegment.test(repository)) return null;
+
+    // GitHub links can include a trailing slash, query, fragment, or a page
+    // path such as /tree/main. Analysis always operates on the repository root.
+    return `https://github.com/${owner}/${repository}`;
+  } catch {
+    return null;
+  }
 }
 
 function pipelineError(error) {

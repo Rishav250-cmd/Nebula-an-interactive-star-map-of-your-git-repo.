@@ -1,5 +1,5 @@
 import fallbackGraph from '../data/mock-graph.json';
-import type { AnalyzeResponse, CallGraph, GraphData, HealthReport, SearchResult } from '../types/graph';
+import type { AnalyzeResponse, CallGraph, GraphData, HealthReport, RepositoryQAResponse, SearchResult } from '../types/graph';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5001';
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -281,6 +281,19 @@ export function searchRepositoryFiles(
   const params = new URLSearchParams({ id, q: query });
   const cacheKey = `${id}|${query.trim().toLowerCase()}`;
   return cachedRequest(searchCache, cacheKey, MAX_SEARCH_CACHE, () => requestJson<SearchResult[]>(`/api/search?${params.toString()}`, { signal }));
+}
+
+export function askRepositoryQuestion(
+  id: string,
+  question: string,
+  signal?: AbortSignal,
+): Promise<RepositoryQAResponse> {
+  return requestJson<RepositoryQAResponse>('/api/qa', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, question }),
+    signal,
+  });
 }
 
 export async function fetchMockGraph(): Promise<GraphData> {
