@@ -99,6 +99,32 @@ test("graph stops after a parse batch when RSS is above its configured limit", a
   }
 });
 
+test("graph stops with a warning when heap use exceeds its configured limit", async () => {
+  const root = await fixtureDirectory();
+  try {
+    const files = [];
+    await mkdir(path.join(root, "src"));
+    for (let index = 0; index < 80; index += 1) {
+      const file = `src/heap-${String(index).padStart(3, "0")}.js`;
+      files.push(file);
+      await writeFile(path.join(root, file), `export const value${index} = ${index};\n`);
+    }
+    const result = runGraph(root, files, {
+      MAX_CODE_FILES: "100",
+      MAX_SOURCE_MB: "40",
+      MAX_RSS_MB: "420",
+      MAX_HEAP_MB: "0.0001",
+      PARSE_BATCH_SIZE: "10",
+    });
+    assert.ok(result.meta.analyzedFiles > 0);
+    assert.ok(result.meta.analyzedFiles < files.length);
+    assert.equal(result.meta.truncatedReason, "memory");
+    assert.ok(result.warnings.some((warning) => warning.message.includes("server memory limit")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("source byte limit stops selection and records source-size truncation", async () => {
   const root = await fixtureDirectory();
   try {
@@ -156,6 +182,7 @@ function runGraph(root, files, env) {
       process.stdout.write(JSON.stringify({
         meta: result.graph.meta,
         nodes: result.graph.nodes.map(({ id }) => id),
+        warnings: result.graph.warnings,
       }));
     } catch (error) {
       process.stdout.write(JSON.stringify({

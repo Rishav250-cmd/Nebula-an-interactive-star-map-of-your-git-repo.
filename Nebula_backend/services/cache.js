@@ -11,7 +11,7 @@ import {
 import path from "node:path";
 import { config } from "./config.js";
 
-export const ANALYSIS_VERSION = 5;
+export const ANALYSIS_VERSION = 6;
 export const MAX_CACHE_BYTES = config.MAX_CACHE_MB * 1024 * 1024;
 export const MAX_CACHE_FILES = config.MAX_CACHE_FILES;
 
@@ -121,17 +121,21 @@ export async function saveAnalysisCache(
 
 export async function pruneAnalysisCache({
   cacheDir = ANALYSIS_CACHE_DIR,
+  maxRepos = MAX_CACHE_FILES,
+  maxDiskBytes = config.MAX_CACHE_DISK_MB * 1024 * 1024,
 } = {}) {
   try {
     const entries = await readdir(cacheDir, { withFileTypes: true });
     const files = await Promise.all(
       entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .filter((entry) =>
+          entry.isFile() && entry.name.endsWith(".json") && entry.name !== "ids.json",
+        )
         .map(async (entry) => {
           const filePath = path.join(cacheDir, entry.name);
           try {
             const metadata = await stat(filePath);
-            return { filePath, modified: metadata.mtimeMs };
+            return { filePath, modified: metadata.mtimeMs, size: metadata.size };
           } catch (error) {
             logCacheError("stat", error);
             return null;
@@ -140,21 +144,36 @@ export async function pruneAnalysisCache({
     );
     const sortedFiles = files
       .filter(Boolean)
-      .sort(
-        (left, right) =>
-          right.modified - left.modified ||
-          left.filePath.localeCompare(right.filePath),
-      );
+      .sort((left, right) => left.modified - right.modified || left.filePath.localeCompare(right.filePath));
+    const repositories = new Map();
+    for (const file of sortedFiles) {
+      const name = path.basename(file.filePath);
+      const repoKey = name.split("__").slice(0, 2).join("__");
+      const repository = repositories.get(repoKey) ?? { files: [], modified: 0, size: 0 };
+      repository.files.push(file);
+      repository.modified = Math.max(repository.modified, file.modified);
+      repository.size += file.size;
+      repositories.set(repoKey, repository);
+    }
 
-    await Promise.all(
-      sortedFiles.slice(MAX_CACHE_FILES).map(async ({ filePath }) => {
+    const oldestFirst = [...repositories.entries()].sort(
+      (left, right) => left[1].modified - right[1].modified || left[0].localeCompare(right[0]),
+    );
+    let totalBytes = sortedFiles.reduce((sum, file) => sum + file.size, 0);
+    let repoCount = oldestFirst.length;
+    const maxBytes = maxDiskBytes;
+    for (const [, repository] of oldestFirst) {
+      if (repoCount <= maxRepos && totalBytes <= maxBytes) break;
+      for (const { filePath, size } of repository.files) {
         try {
           await rm(filePath, { force: true });
+          totalBytes -= size;
         } catch (error) {
           logCacheError("prune", error);
         }
-      }),
-    );
+      }
+      repoCount -= 1;
+    }
   } catch (error) {
     if (error?.code !== "ENOENT") logCacheError("prune", error);
   }

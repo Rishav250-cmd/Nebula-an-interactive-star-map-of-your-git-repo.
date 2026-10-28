@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { searchRepositoryFiles, type SearchResult } from '../api/client';
+import { errorForDisplay, searchRepositoryFiles, type SearchResult } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
 import type { CallGraphNode } from '../types/graph';
 
@@ -85,12 +85,12 @@ export function SearchBar() {
         .catch((searchError: unknown) => {
           if (controller.signal.aborted || (searchError instanceof DOMException && searchError.name === 'AbortError')) return;
           setResults([]);
-          setError(searchError instanceof Error ? searchError.message : 'Search failed.');
+          setError(errorForDisplay(searchError));
         })
         .finally(() => {
           if (!controller.signal.aborted) setIsSearching(false);
         });
-    }, 180);
+    }, 200);
 
     return () => {
       window.clearTimeout(timeoutId);

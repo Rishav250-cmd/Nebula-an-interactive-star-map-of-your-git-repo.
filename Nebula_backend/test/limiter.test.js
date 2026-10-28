@@ -110,7 +110,7 @@ test("async analysis queues jobs and returns BUSY when active and waiting capaci
     const busy = responses.find((response) => response.status === 503);
     assert.ok(busy);
     assert.equal(busy.headers.get("retry-after"), "15");
-    assert.equal((await busy.json()).code, "BUSY");
+    assert.equal((await busy.json()).error.code, "BUSY");
 
     await delay(1100);
     const statuses = await Promise.all(urls.slice(0, 6).map(async (url) => {
@@ -137,7 +137,7 @@ test("the 13th analyze request from one client IP is rate limited", async () => 
     }
     assert.equal(finalResponse.status, 429);
     assert.ok(Number(finalResponse.headers.get("retry-after")) > 0);
-    assert.equal((await finalResponse.json()).code, "RATE_LIMITED");
+    assert.equal((await finalResponse.json()).error.code, "RATE_LIMITED");
   });
 });
 
@@ -230,7 +230,9 @@ test("stored ids survive restart and unknown ids include their previous URL", as
     await withServer(createApp({ errorLogger: () => {} }), async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/graph/persisted-nebula-id`);
       assert.equal(response.status, 404);
-      assert.deepEqual((await response.json()).details, { url });
+      assert.deepEqual((await response.json()), {
+        error: { code: "UNKNOWN_ID", message: "Unknown repository id" },
+      });
     });
   } finally {
     await flushIdsMap();

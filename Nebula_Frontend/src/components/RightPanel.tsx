@@ -5,7 +5,7 @@ import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javasc
 import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
-import { fetchRepositoryFile, type FileResponse } from '../api/client';
+import { errorForDisplay, fetchRepositoryFile, type FileResponse } from '../api/client';
 import { useGraphStore } from '../store/useGraphStore';
 import { buildAdjacency } from '../lib/graphHighlight';
 
@@ -43,6 +43,7 @@ export function RightPanel() {
   const adjacency = useMemo(() => buildAdjacency(graph), [graph]);
   const codeViewportRef = useRef<HTMLDivElement | null>(null);
   const [fileState, setFileState] = useState<FileLoadState>({ key: null, status: 'idle' });
+  const [fileRetry, setFileRetry] = useState(0);
   const [flashedLine, setFlashedLine] = useState<number | null>(null);
   const requestKey = analysisId && selectedId ? `${analysisId}\0${selectedId}` : null;
 
@@ -64,12 +65,12 @@ export function RightPanel() {
         setFileState({
           key: requestKey,
           status: 'error',
-          message: fileError instanceof Error ? fileError.message : 'Could not load this file.',
+          message: errorForDisplay(fileError),
         });
       });
 
     return () => controller.abort();
-  }, [analysisId, requestKey, selectedId]);
+  }, [analysisId, fileRetry, requestKey, selectedId]);
 
   const visibleState = !requestKey
     ? { key: null, status: 'idle' } as const
@@ -126,7 +127,12 @@ export function RightPanel() {
       )}
       {!selectedId && <p className="panel-placeholder">Select a file to view its code.</p>}
       {visibleState.status === 'loading' && <p className="panel-placeholder" role="status">Loading source…</p>}
-      {visibleState.status === 'error' && <p className="code-error" role="alert">{visibleState.message}</p>}
+      {visibleState.status === 'error' && (
+        <div className="code-error" role="alert">
+          <p>{visibleState.message}</p>
+          <button type="button" onClick={() => setFileRetry((attempt) => attempt + 1)}>Retry source</button>
+        </div>
+      )}
       {file && (
         <div
           className="code-content"

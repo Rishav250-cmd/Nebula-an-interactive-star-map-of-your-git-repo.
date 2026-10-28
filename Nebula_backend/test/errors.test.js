@@ -24,18 +24,20 @@ test("structured error middleware returns a safe production response and Retry-A
       assert.equal(limited.status, 429);
       assert.equal(limited.headers.get("retry-after"), "23");
       assert.deepEqual(await limited.json(), {
-        error: "GitHub API rate limit exceeded",
-        code: "RATE_LIMITED",
-        hint: "Try again after the rate limit resets.",
-        details: null,
+        error: {
+          code: "RATE_LIMITED",
+          message: "GitHub API rate limit exceeded",
+        },
       });
 
       const failed = await fetch(`${baseUrl}/failed`);
       const body = await failed.json();
       assert.equal(failed.status, 500);
-      assert.deepEqual(Object.keys(body).sort(), ["code", "details", "error", "hint"]);
-      assert.equal(body.code, "INTERNAL");
-      assert.equal(body.error, "An internal error occurred");
+      assert.deepEqual(Object.keys(body), ["error"]);
+      assert.deepEqual(body.error, {
+        code: "INTERNAL",
+        message: "An internal error occurred",
+      });
       assert.equal(JSON.stringify(body).includes("stack"), false);
       assert.equal(JSON.stringify(body).includes("/private/server/path"), false);
       assert.ok(logged.length >= 2);
@@ -52,10 +54,10 @@ test("unknown API routes use the structured JSON 404 handler", async () => {
     const response = await fetch(`${baseUrl}/api/not-a-route`);
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), {
-      error: "API endpoint not found",
-      code: "UNKNOWN_ROUTE",
-      hint: "Check the API route and try again.",
-      details: null,
+      error: {
+        code: "UNKNOWN_ROUTE",
+        message: "API endpoint not found",
+      },
     });
   });
 });

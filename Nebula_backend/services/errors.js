@@ -48,10 +48,10 @@ export function errorMiddleware({ logger = console.error } = {}) {
       response.set("Retry-After", String(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : 60));
     }
     return response.status(nebulaError.status).json({
-      error: nebulaError.message,
-      code: nebulaError.code,
-      hint: nebulaError.hint,
-      details: nebulaError.details,
+      error: {
+        code: nebulaError.code,
+        message: nebulaError.message,
+      },
     });
   };
 }

@@ -4,6 +4,9 @@ export function RepositoryHealthCard() {
   const graph = useGraphStore((state) => state.graph);
   const analysisId = useGraphStore((state) => state.analysisId);
   const healthReport = useGraphStore((state) => state.healthReport);
+  const healthStatus = useGraphStore((state) => state.healthStatus);
+  const healthError = useGraphStore((state) => state.healthError);
+  const loadHealthReport = useGraphStore((state) => state.loadHealthReport);
   const focusNode = useGraphStore((state) => state.focusNode);
 
   if (!graph) return null;
@@ -51,9 +54,14 @@ export function RepositoryHealthCard() {
             )}
           </div>
         </>
+      ) : healthStatus === 'error' ? (
+        <div className="repo-health-card__loading" role="alert">
+          <p>{healthError ?? 'Health report failed to load.'}</p>
+          {analysisId && <button type="button" onClick={() => { void loadHealthReport(); }}>Retry health report</button>}
+        </div>
       ) : (
         <div className="repo-health-card__loading" role="status">
-          {analysisId ? 'Calculating repository health…' : 'Health report is unavailable for this graph.'}
+          {healthStatus === 'loading' ? 'Loading health report…' : analysisId ? 'Loading health report…' : 'Health report is unavailable for this graph.'}
         </div>
       )}
     </section>

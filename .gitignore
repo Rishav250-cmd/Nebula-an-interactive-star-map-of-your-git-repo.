@@ -5,4 +5,5 @@ build
 .DS_Store
 coverage
 Nebula_backend/.cache/
+.repos/
 .vscode
