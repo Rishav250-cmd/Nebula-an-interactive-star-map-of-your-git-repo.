@@ -2,6 +2,16 @@
 
 Nebula turns a public GitHub repository into an interactive dependency graph.
 
+## Team
+
+**Event:** CodeSangam Webster
+
+**Team:** Coding Knights
+
+- Umesh Chaudhary
+- Rishab Dev
+- Varish Panwar
+
 ## Backend
 
 The Express backend lives in `Nebula_backend/` and listens on port `5001`.
