@@ -1,163 +1,286 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import './SplashScreen.css';
 import splashImage from '../assets/Nebula-splash.jpeg';
+import { NebulaLogo } from './NebulaLogo';
 
-const IMAGE_LOAD_SAFETY_MS = 3000;
-const FADE_OUT_MS = 500;
+export const SPLASH_TIMING = Object.freeze({
+  loadingMs: 2000,
+  contentFadeMs: 250,
+  logoTravelMs: 900,
+  appRevealMs: 900,
+  reducedMotionFadeMs: 200,
+  appStartScale: 0.98,
+  travelEasing: 'cubic-bezier(0.42, 0, 0.58, 1)',
+  revealEasing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+});
 
-type SplashPhase = 'waiting' | 'loading' | 'fading' | 'done';
+type SplashPhase = 'loading' | 'travel' | 'reveal' | 'done';
+type RevealOrigin = { x: number; y: number };
 
 type SplashScreenProps = {
-  durationMs?: number;
-  onDone: () => void;
+  appShellRef: RefObject<HTMLDivElement | null>;
+  onPhaseChange: (
+    phase: SplashPhase,
+    origin?: RevealOrigin,
+    reducedMotion?: boolean,
+  ) => void;
 };
 
-export function SplashScreen({ durationMs = 2000, onDone }: SplashScreenProps) {
-  const [phase, setPhase] = useState<SplashPhase>('waiting');
-  const [imageFailed, setImageFailed] = useState(false);
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-  );
-  const hasStartedRef = useRef(false);
-  const hasFinishedRef = useRef(false);
-  const onDoneRef = useRef(onDone);
-  onDoneRef.current = onDone;
-
-  const safeDurationMs = Number.isFinite(durationMs)
-    ? Math.max(0, durationMs)
-    : 2000;
-  const effectiveDurationMs = prefersReducedMotion
-    ? Math.min(300, safeDurationMs)
-    : safeDurationMs;
-
-  const startLoading = useCallback(() => {
-    if (hasStartedRef.current || hasFinishedRef.current) return;
-
-    hasStartedRef.current = true;
-    setPhase('loading');
-  }, []);
-
-  const finish = useCallback(() => {
-    if (hasFinishedRef.current) return;
-
-    hasFinishedRef.current = true;
-    setPhase('done');
-    onDoneRef.current();
-  }, []);
+export function SplashScreen({ appShellRef, onPhaseChange }: SplashScreenProps) {
+  const [assetsReady, setAssetsReady] = useState(false);
+  const visualRef = useRef<HTMLDivElement>(null);
+  const backgroundRef = useRef<HTMLImageElement>(null);
+  const logoRef = useRef<HTMLImageElement>(null);
+  const loaderRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const updateMotionPreference = () => {
-      setPrefersReducedMotion(mediaQuery.matches);
+    let cancelled = false;
+    const logo = logoRef.current;
+    const background = backgroundRef.current;
+
+    void Promise.all([
+      document.fonts.ready,
+      decodeImage(background),
+      decodeImage(logo),
+    ]).then(() => {
+      if (!cancelled) setAssetsReady(true);
+    });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!assetsReady) return;
+
+    const background = backgroundRef.current;
+    const logo = logoRef.current;
+    if (!background || !logo) return;
+
+    const placeLogo = () => {
+      const bounds = background.getBoundingClientRect();
+      const scale = Math.min(
+        bounds.width / background.naturalWidth,
+        bounds.height / background.naturalHeight,
+      );
+      const size = Math.max(68, 90 * scale);
+      let left = bounds.left + (bounds.width - background.naturalWidth * scale) / 2 + 70 * scale;
+      let top = bounds.top + (bounds.height - background.naturalHeight * scale) / 2 + 5 * scale;
+
+      // Keep the animated mark readable when the artwork is scaled for mobile.
+      if (left + size < 0 || left > window.innerWidth - 16) {
+        const mobileSize = Math.min(76, Math.max(60, window.innerWidth * 0.19));
+        left = Math.max(16, (window.innerWidth - mobileSize) / 2);
+        top = Math.max(18, Math.min(window.innerHeight * 0.12, 96));
+        logo.style.width = `${mobileSize}px`;
+        logo.style.height = `${mobileSize}px`;
+      } else {
+        logo.style.width = `${size}px`;
+        logo.style.height = `${size}px`;
+      }
+
+      logo.style.left = `${left}px`;
+      logo.style.top = `${top}px`;
+      logo.style.visibility = 'visible';
+      logo.style.opacity = '1';
     };
 
-    updateMotionPreference();
-    mediaQuery.addEventListener('change', updateMotionPreference);
-    return () => mediaQuery.removeEventListener('change', updateMotionPreference);
-  }, []);
+    placeLogo();
+    window.addEventListener('resize', placeLogo);
+    return () => window.removeEventListener('resize', placeLogo);
+  }, [assetsReady]);
 
   useEffect(() => {
-    if (phase !== 'waiting') return;
+    if (!assetsReady) return;
 
-    const safetyTimeout = window.setTimeout(() => {
-      if (hasStartedRef.current) return;
-      setImageFailed(true);
-      startLoading();
-    }, IMAGE_LOAD_SAFETY_MS);
+    let cancelled = false;
+    const animations: Animation[] = [];
+    const animate = (
+      element: Element,
+      keyframes: Keyframe[],
+      options: KeyframeAnimationOptions,
+    ) => {
+      const animation = element.animate(keyframes, options);
+      animations.push(animation);
+      return animation;
+    };
 
-    return () => window.clearTimeout(safetyTimeout);
-  }, [phase, startLoading]);
+    const startReveal = (
+      origin: RevealOrigin,
+      reducedMotion: boolean,
+      visualAlreadyHidden = false,
+    ) => {
+      onPhaseChange('reveal', origin, reducedMotion);
+      const duration = reducedMotion
+        ? SPLASH_TIMING.reducedMotionFadeMs
+        : SPLASH_TIMING.contentFadeMs;
+      const visual = visualRef.current;
+      const logo = logoRef.current;
+      if (visual && !visualAlreadyHidden) {
+        const currentOpacity = Number.parseFloat(getComputedStyle(visual).opacity);
+        animate(visual, [
+          { opacity: Number.isFinite(currentOpacity) ? currentOpacity : 1 },
+          { opacity: 0 },
+        ], {
+          duration,
+          easing: 'ease-out',
+          fill: 'forwards',
+        });
+      }
+      if (reducedMotion && logo) {
+        animate(logo, [{ opacity: 1 }, { opacity: 0 }], {
+          duration,
+          easing: 'ease-out',
+          fill: 'forwards',
+        });
+      }
+    };
 
-  useEffect(() => {
-    if (phase !== 'loading') return;
+    const run = async () => {
+      const loader = loaderRef.current;
+      if (!loader) return;
 
-    const loadingTimeout = window.setTimeout(
-      () => setPhase('fading'),
-      effectiveDurationMs,
-    );
-    return () => window.clearTimeout(loadingTimeout);
-  }, [effectiveDurationMs, phase]);
+      loader.style.transform = 'scaleX(0)';
+      const loadingAnimation = animate(loader, [
+        { transform: 'scaleX(0)' },
+        { transform: 'scaleX(1)' },
+      ], {
+        duration: SPLASH_TIMING.loadingMs,
+        easing: 'linear',
+        fill: 'forwards',
+      });
 
-  useEffect(() => {
-    if (phase !== 'fading') return;
+      try {
+        await loadingAnimation.finished;
+      } catch {
+        return;
+      }
+      if (cancelled) return;
 
-    const fadeFallback = window.setTimeout(finish, FADE_OUT_MS + 100);
-    return () => window.clearTimeout(fadeFallback);
-  }, [finish, phase]);
+      const appShell = appShellRef.current;
+      const headerLogo = appShell?.querySelector<HTMLImageElement>(
+        '[data-nebula-logo="header"]',
+      );
+      const flyingLogo = logoRef.current;
+      const visual = visualRef.current;
+      if (!appShell || !headerLogo || !flyingLogo || !visual) {
+        startReveal({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, true);
+        return;
+      }
 
-  if (phase === 'done') return null;
+      await Promise.all([
+        document.fonts.ready,
+        decodeImage(headerLogo),
+        decodeImage(flyingLogo),
+      ]);
+      if (cancelled) return;
 
-  const overlayClasses = [
-    'splash-overlay',
-    phase === 'fading' ? 'splash-overlay--fading' : '',
-    prefersReducedMotion ? 'splash-overlay--reduced-motion' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  const loaderFillClasses = [
-    'splash-loader-fill',
-    phase === 'waiting' ? '' : 'splash-loader-fill--running',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  const loaderStyle = {
-    '--splash-fill-duration': `${effectiveDurationMs}ms`,
-  } as CSSProperties;
+      const appBounds = appShell.getBoundingClientRect();
+      const first = flyingLogo.getBoundingClientRect();
+      const last = headerLogo.getBoundingClientRect();
+      const origin = {
+        x: last.left + last.width / 2 - appBounds.left,
+        y: last.top + last.height / 2 - appBounds.top,
+      };
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      if (reducedMotion || first.width === 0 || last.width === 0) {
+        startReveal(origin, true);
+        return;
+      }
+
+      const landingWidth = last.width * SPLASH_TIMING.appStartScale;
+      const landingHeight = last.height * SPLASH_TIMING.appStartScale;
+      const landingLeft = last.left + (last.width - landingWidth) / 2;
+      const landingTop = last.top + (last.height - landingHeight) / 2;
+      const translateX = landingLeft - first.left;
+      const translateY = landingTop - first.top;
+      const scaleX = landingWidth / first.width;
+      const scaleY = landingHeight / first.height;
+      const landingTransform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
+
+      onPhaseChange('travel');
+      const contentFade = animate(visual, [{ opacity: 1 }, { opacity: 0 }], {
+        duration: SPLASH_TIMING.contentFadeMs,
+        easing: 'ease-out',
+        fill: 'forwards',
+      });
+      const logoTravel = animate(flyingLogo, [
+        { transform: 'translate(0px, 0px) scale(1, 1)', opacity: 1 },
+        { transform: landingTransform, opacity: 1 },
+      ], {
+        duration: SPLASH_TIMING.logoTravelMs,
+        easing: SPLASH_TIMING.travelEasing,
+        fill: 'forwards',
+      });
+
+      try {
+        await Promise.all([contentFade.finished, logoTravel.finished]);
+      } catch {
+        return;
+      }
+      if (cancelled) return;
+
+      flyingLogo.style.transform = landingTransform;
+      logoTravel.cancel();
+      startReveal(origin, false, true);
+      window.requestAnimationFrame(() => {
+        if (!cancelled) flyingLogo.style.opacity = '0';
+      });
+    };
+
+    void run().catch(() => {
+      if (!cancelled) {
+        startReveal({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      animations.forEach((animation) => animation.cancel());
+    };
+  }, [appShellRef, assetsReady, onPhaseChange]);
 
   return (
     <>
       <link rel="preload" as="image" href={splashImage} />
-      <div
-        className={overlayClasses}
-        onTransitionEnd={(event) => {
-          if (
-            event.target === event.currentTarget
-            && event.propertyName === 'opacity'
-            && phase === 'fading'
-          ) {
-            finish();
-          }
-        }}
-        role="status"
-        aria-live="polite"
-      >
+      <div className="splash-overlay" role="status" aria-live="polite">
         <span className="splash-visually-hidden">Loading Nebula</span>
-        <div className="splash-content">
-          {imageFailed ? (
-            <span className="splash-fallback-title splash-fallback-title--entering">
-              Nebula
-            </span>
-          ) : (
-            <img
-              className={`splash-logo ${phase === 'waiting' ? '' : 'splash-logo--entering'}`}
-              src={splashImage}
-              alt="Nebula, mapping the constellations of your codebase"
-              loading="eager"
-              fetchPriority="high"
-              onLoad={startLoading}
-              onError={() => {
-                setImageFailed(true);
-                startLoading();
-              }}
-            />
-          )}
-          <div
-            className="splash-loader-track"
-            style={loaderStyle}
+        <div className="splash-visual" ref={visualRef}>
+          <img
+            className="splash-background"
+            src={splashImage}
+            alt=""
             aria-hidden="true"
-          >
-            <div className={loaderFillClasses} />
+            ref={backgroundRef}
+            loading="eager"
+            fetchPriority="high"
+            draggable={false}
+          />
+          <div className="splash-loader-track" aria-hidden="true">
+            <div className="splash-loader-fill" ref={loaderRef} />
           </div>
         </div>
+        <NebulaLogo
+          className="splash-flight-logo"
+          alt=""
+          aria-hidden="true"
+          data-splash-logo="true"
+          ref={logoRef}
+        />
       </div>
     </>
   );
+}
+
+function decodeImage(image: HTMLImageElement | null): Promise<void> {
+  if (!image) return Promise.resolve();
+  if (image.decode) return image.decode().then(() => undefined).catch(() => undefined);
+  if (image.complete) return Promise.resolve();
+  return new Promise((resolve) => {
+    image.addEventListener('load', () => resolve(), { once: true });
+    image.addEventListener('error', () => resolve(), { once: true });
+  });
 }
 
 export default SplashScreen;
