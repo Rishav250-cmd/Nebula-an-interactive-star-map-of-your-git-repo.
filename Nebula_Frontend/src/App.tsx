@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent,
@@ -10,7 +10,7 @@ import { fetchMockGraph } from './api/client';
 import { generateMockGraph } from './data/generateMock';
 import { GraphCanvas } from './components/GraphCanvas';
 import { LeftPanel } from './components/LeftPanel';
-import { SplashScreen } from './components/SplashScreen';
+import { SplashScreen, SPLASH_TIMING } from './components/SplashScreen';
 import { TopBar } from './components/TopBar';
 import { useGraphStore } from './store/useGraphStore';
 
@@ -20,15 +20,87 @@ const MemoizedTopBar = memo(TopBar);
 const LazyRightPanel = lazy(() => import('./components/RightPanel').then((module) => ({ default: module.RightPanel })));
 const RightPanel = memo(LazyRightPanel);
 
+type SplashPhase = 'loading' | 'travel' | 'reveal' | 'done';
+type RevealOrigin = { x: number; y: number };
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(shouldShowSplash);
+  const [splashPhase, setSplashPhase] = useState<SplashPhase>(() => showSplash ? 'loading' : 'done');
+  const [revealOrigin, setRevealOrigin] = useState<RevealOrigin | null>(null);
+  const [reducedMotionReveal, setReducedMotionReveal] = useState(false);
   const [leftPanelWidth, setLeftPanelWidth] = useState(260);
   const [rightPanelWidth, setRightPanelWidth] = useState(380);
+  const appShellRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const analyze = useGraphStore((state) => state.analyze);
   const setGraph = useGraphStore((state) => state.setGraph);
   const setStatus = useGraphStore((state) => state.setStatus);
+
+  const handleSplashPhaseChange = useCallback((
+    nextPhase: SplashPhase,
+    nextOrigin?: RevealOrigin,
+    reducedMotion = false,
+  ) => {
+    setSplashPhase(nextPhase);
+    if (nextOrigin) setRevealOrigin(nextOrigin);
+    setReducedMotionReveal(reducedMotion);
+  }, []);
+
+  const handleSplashDone = useCallback(() => {
+    try {
+      window.sessionStorage.setItem('nebula_splash_seen', '1');
+    } catch {
+      // Keep the completed app usable when browser storage is unavailable.
+    }
+    setSplashPhase('done');
+    setShowSplash(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!showSplash || splashPhase !== 'reveal' || !revealOrigin) return;
+    const appShell = appShellRef.current;
+    if (!appShell) {
+      handleSplashDone();
+      return;
+    }
+
+    const { x, y } = revealOrigin;
+    const animation = appShell.animate(
+      reducedMotionReveal
+        ? [
+          { opacity: 0, transform: 'none', clipPath: 'none' },
+          { opacity: 1, transform: 'none', clipPath: 'none' },
+        ]
+        : [
+          {
+            opacity: 0,
+            transform: `scale(${SPLASH_TIMING.appStartScale})`,
+            clipPath: `circle(0px at ${x}px ${y}px)`,
+          },
+          {
+            opacity: 1,
+            transform: 'scale(1)',
+            clipPath: `circle(150% at ${x}px ${y}px)`,
+          },
+        ],
+      {
+        duration: reducedMotionReveal
+          ? SPLASH_TIMING.reducedMotionFadeMs
+          : SPLASH_TIMING.appRevealMs,
+        easing: SPLASH_TIMING.revealEasing,
+        fill: 'forwards',
+      },
+    );
+    let active = true;
+    void animation.finished.then(() => {
+      if (active) handleSplashDone();
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      animation.cancel();
+    };
+  }, [handleSplashDone, reducedMotionReveal, revealOrigin, showSplash, splashPhase]);
 
   useEffect(() => {
     let isMounted = true;
@@ -66,19 +138,24 @@ export default function App() {
     void analyze(url);
   }, [analyze]);
 
-  const handleSplashDone = useCallback(() => {
-    try {
-      window.sessionStorage.setItem('nebula_splash_seen', '1');
-    } catch {
-      // The splash still completes when browser storage is unavailable.
-    }
-    setShowSplash(false);
-  }, []);
-
   return (
     <>
-      <div className="app-shell" inert={showSplash} aria-hidden={showSplash}>
-        <MemoizedTopBar onAnalyze={handleAnalyze} />
+      <div
+        className={[
+          'app-shell',
+          showSplash ? 'app-shell--locked' : '',
+          showSplash && splashPhase === 'reveal' ? 'app-shell--revealing' : '',
+          showSplash && reducedMotionReveal ? 'app-shell--crossfade' : '',
+        ].filter(Boolean).join(' ')}
+        style={{
+          '--reveal-x': `${revealOrigin?.x ?? 0}px`,
+          '--reveal-y': `${revealOrigin?.y ?? 0}px`,
+        } as CSSProperties}
+        ref={appShellRef}
+        inert={showSplash}
+        aria-hidden={showSplash}
+      >
+        <MemoizedTopBar onAnalyze={handleAnalyze} headerLogoVisible={!showSplash || splashPhase === 'reveal'} />
         <div
           className="workspace"
           ref={workspaceRef}
@@ -116,7 +193,12 @@ export default function App() {
           </Suspense>
         </div>
       </div>
-      {showSplash && <SplashScreen onDone={handleSplashDone} />}
+      {showSplash && (
+        <SplashScreen
+          appShellRef={appShellRef}
+          onPhaseChange={handleSplashPhaseChange}
+        />
+      )}
     </>
   );
 }
@@ -260,12 +342,15 @@ function PanelResizeHandle({
 }
 
 function shouldShowSplash() {
-  if (new URLSearchParams(window.location.search).get('nosplash') === '1') {
-    return false;
-  }
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('splash') === '1') return true;
+  if (params.get('nosplash') === '1') return false;
 
   try {
-    return window.sessionStorage.getItem('nebula_splash_seen') !== '1';
+    if (window.sessionStorage.getItem('nebula_splash_seen') === '1') return false;
+    // Claim the session at first render so a hot reload won't replay the splash.
+    window.sessionStorage.setItem('nebula_splash_seen', '1');
+    return true;
   } catch {
     return true;
   }

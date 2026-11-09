@@ -7,6 +7,22 @@
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.app-shell--locked {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-shell--revealing {
+  clip-path: circle(0px at var(--reveal-x) var(--reveal-y));
+  transform: scale(0.98);
+  transform-origin: var(--reveal-x) var(--reveal-y);
+}
+
+.app-shell--revealing.app-shell--crossfade {
+  clip-path: none;
+  transform: none;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -38,40 +54,15 @@
 }
 
 .brand-mark {
-  display: grid;
+  display: block;
   width: 52px;
   height: 52px;
   flex: 0 0 52px;
-  place-items: center;
-  border: 1px solid #2d355a;
-  border-radius: 16px;
-  background: #0b0e1d;
+  object-fit: contain;
 }
 
-.brand-mark svg {
-  width: 37px;
-  height: 37px;
-  overflow: visible;
-}
-
-.brand-constellation-line {
-  fill: none;
-  stroke: #6c4df6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.5;
-}
-
-.brand-star--teal {
-  fill: #54d9d0;
-}
-
-.brand-star--violet {
-  fill: #b79cff;
-}
-
-.brand-constellation-core {
-  fill: #a995ff;
+.brand-mark--hidden {
+  visibility: hidden;
 }
 
 .brand-name {
